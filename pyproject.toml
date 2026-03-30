@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openoutreach"
+version = "0.2.0"
+description = "CLI for OpenOutreach Premium — provision and manage your cloud LinkedIn automation instance."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "OpenOutreach", email = "hello@openoutreach.app" }]
+dependencies = [
+    "typer>=0.12,<1",
+    "httpx>=0.27,<1",
+    "rich>=13,<14",
+    "questionary>=2,<3",
+]
+
+[project.scripts]
+openoutreach = "openoutreach.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openoutreach"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "respx>=0.21", "pytest-asyncio>=0.23"]
