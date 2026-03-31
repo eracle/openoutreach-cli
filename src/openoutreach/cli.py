@@ -110,6 +110,28 @@ def status() -> None:
 
 
 @app.command()
+def logs() -> None:
+    """Show logs from your cloud instance."""
+    creds = config.load()
+    instance_id = creds.get("instance_id")
+    if not instance_id:
+        err.print("[red]No instance found.[/red] Run [bold]openoutreach up[/bold] first.")
+        raise SystemExit(1)
+
+    config.require_token()
+
+    try:
+        log_text = client.get_instance_logs(instance_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 409:
+            err.print("[red]Instance is not running.[/red]")
+            raise SystemExit(1)
+        raise
+
+    console.print(log_text)
+
+
+@app.command()
 def down() -> None:
     """Destroy your cloud instance."""
     creds = config.load()
