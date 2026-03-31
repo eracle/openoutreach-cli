@@ -8,15 +8,24 @@ import httpx
 import typer
 from rich.console import Console
 
-from openoutreach import client, config
+from openoutreach import __version__, client, config
 from openoutreach.prompts import PREMIUM_QUESTIONS
 from openoutreach.wizard import ask as ask_wizard
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"openoutreach {__version__}")
+        raise typer.Exit()
+
 
 app = typer.Typer(help="Manage your OpenOutreach Premium cloud instance.")
 
 
 @app.callback()
-def main(local: bool = typer.Option(False, "--local", hidden=True)) -> None:
+def main(
+    local: bool = typer.Option(False, "--local", hidden=True),
+    version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True),
+) -> None:
     if local:
         config.LOCAL = True
 console = Console()

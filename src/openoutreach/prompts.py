@@ -59,8 +59,9 @@ FOLLOW_UP_DAILY = IntText("follow_up_daily_limit", "Follow-up messages daily lim
 
 LEGAL = Confirm(
     "legal_acceptance",
-    "Do you accept the Legal Notice? (https://github.com/eracle/linkedin/blob/master/LEGAL_NOTICE.md)",
+    "Do you accept the Legal Notice? (https://github.com/eracle/OpenOutreach/LEGAL_NOTICE.md)",
     default=False,
+    required=True,
 )
 
 # ── Profiles ─────────────────────────────────────────────────────
