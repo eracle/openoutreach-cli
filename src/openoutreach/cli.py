@@ -18,16 +18,20 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-app = typer.Typer(help="Manage your OpenOutreach Premium cloud instance.")
+app = typer.Typer(help="Manage your OpenOutreach Premium cloud instance.", invoke_without_command=True, add_completion=False)
 
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     local: bool = typer.Option(False, "--local", hidden=True),
     version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True),
 ) -> None:
     if local:
         config.LOCAL = True
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
 console = Console()
 err = Console(stderr=True)
 
@@ -49,10 +53,14 @@ def signup() -> None:
     checkout_url = data["checkout_url"]
     session_id = data["session_id"]
 
-    console.print(f"Opening checkout: [link={checkout_url}]{checkout_url}[/link]")
-    webbrowser.open(checkout_url)
+    if checkout_url:
+        console.print(f"Opening checkout: [link={checkout_url}]{checkout_url}[/link]")
+        webbrowser.open(checkout_url)
 
-    with console.status("Waiting for payment…"):
+        with console.status("Waiting for payment…"):
+            result = client.poll_auth_status(session_id)
+    else:
+        console.print("Subscription already active — reusing credentials.")
         result = client.poll_auth_status(session_id)
 
     config.save({"api_token": result["api_token"], "customer_id": result["customer_id"]})

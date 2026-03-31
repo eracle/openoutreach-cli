@@ -45,7 +45,7 @@ def poll_auth_status(session_id: str, *, timeout: int = 300, interval: int = 3) 
 
 def create_instance() -> dict:
     """POST /api/instances/ → {instance_id}"""
-    r = httpx.post(f"{_base_url()}/api/instances/", headers=_auth_headers())
+    r = httpx.post(f"{_base_url()}/api/instances/", headers=_auth_headers(), timeout=60)
     r.raise_for_status()
     return r.json()
 
