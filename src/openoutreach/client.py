@@ -68,12 +68,6 @@ def poll_instance_running(instance_id: int, *, timeout: int = 300, interval: int
     raise TimeoutError("Instance did not reach 'running' state in time.")
 
 
-def get_instance_logs(instance_id: int) -> str:
-    """GET /api/instances/{id}/logs/ → log text"""
-    r = httpx.get(f"{_base_url()}/api/instances/{instance_id}/logs/", headers=_auth_headers(), timeout=15)
-    r.raise_for_status()
-    return r.json()["logs"]
-
 
 def destroy_instance(instance_id: int) -> None:
     """DELETE /api/instances/{id}/"""

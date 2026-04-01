@@ -1,4 +1,4 @@
-"""OpenOutreach CLI — 4 commands: signup, up, status, down."""
+"""OpenOutreach CLI — 5 commands: signup, up, status, logs, down."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 
 from openoutreach import __version__, client, config
+from openoutreach.log_stream import stream_logs
 from openoutreach.prompts import PREMIUM_QUESTIONS
 from openoutreach.wizard import ask as ask_wizard
 
@@ -88,6 +89,12 @@ def up() -> None:
     with console.status("Waiting for instance to start…"):
         info = client.poll_instance_running(instance_id)
 
+    config.save({
+        "droplet_ip": info["droplet_ip"],
+        "server_cert": info["server_cert"],
+        "client_cert": info["client_cert"],
+        "client_key": info["client_key"],
+    })
     console.print(f"[green]✓[/green] Instance running — region: {info['region']}")
 
 
@@ -111,24 +118,23 @@ def status() -> None:
 
 @app.command()
 def logs() -> None:
-    """Show logs from your cloud instance."""
+    """Stream live logs from your cloud instance (mTLS, tail -f style)."""
     creds = config.load()
-    instance_id = creds.get("instance_id")
-    if not instance_id:
+
+    droplet_ip = creds.get("droplet_ip")
+    server_cert = creds.get("server_cert")
+    client_cert = creds.get("client_cert")
+    client_key = creds.get("client_key")
+
+    if not all([droplet_ip, server_cert, client_cert, client_key]):
         err.print("[red]No instance found.[/red] Run [bold]openoutreach up[/bold] first.")
         raise SystemExit(1)
 
-    config.require_token()
-
     try:
-        log_text = client.get_instance_logs(instance_id)
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 409:
-            err.print("[red]Instance is not running.[/red]")
-            raise SystemExit(1)
-        raise
-
-    console.print(log_text)
+        stream_logs(droplet_ip, server_cert, client_cert, client_key)
+    except ConnectionError as exc:
+        err.print(f"[red]Could not connect to log stream:[/red] {exc}")
+        raise SystemExit(1)
 
 
 @app.command()
@@ -145,5 +151,11 @@ def down() -> None:
     with console.status("Destroying instance…"):
         client.destroy_instance(instance_id)
 
-    config.save({"instance_id": None})
+    config.save({
+        "instance_id": None,
+        "droplet_ip": None,
+        "server_cert": None,
+        "client_cert": None,
+        "client_key": None,
+    })
     console.print("[green]✓[/green] Instance destroyed.")

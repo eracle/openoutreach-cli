@@ -80,11 +80,24 @@ def test_up(mock_create, mock_poll):
     save({"api_token": "tok_abc"})
 
     mock_create.return_value = {"id": 42}
-    mock_poll.return_value = {"status": "running", "region": "ams3"}
+    mock_poll.return_value = {
+        "status": "running",
+        "region": "ams3",
+        "droplet_ip": "1.2.3.4",
+        "server_cert": "SERVERCERT",
+        "client_cert": "CLIENTCERT",
+        "client_key": "CLIENTKEY",
+    }
 
     result = runner.invoke(app, ["up"])
     assert result.exit_code == 0
     assert "running" in result.output
+
+    from openoutreach.config import load
+
+    creds = load()
+    assert creds["droplet_ip"] == "1.2.3.4"
+    assert creds["server_cert"] == "SERVERCERT"
 
 
 # ── status ─────────────────────────────────────────────────────────
@@ -104,6 +117,47 @@ def test_status(mock_get):
 
 def test_status_no_instance():
     result = runner.invoke(app, ["status"])
+    assert result.exit_code == 1
+
+
+# ── logs ──────────────────────────────────────────────────────────
+
+
+@patch("openoutreach.cli.stream_logs")
+def test_logs(mock_stream):
+    from openoutreach.config import save
+
+    save({
+        "api_token": "tok_abc",
+        "instance_id": 42,
+        "droplet_ip": "1.2.3.4",
+        "server_cert": "SERVERCERT",
+        "client_cert": "CLIENTCERT",
+        "client_key": "CLIENTKEY",
+    })
+
+    result = runner.invoke(app, ["logs"])
+    assert result.exit_code == 0
+    mock_stream.assert_called_once_with("1.2.3.4", "SERVERCERT", "CLIENTCERT", "CLIENTKEY")
+
+
+def test_logs_no_instance():
+    result = runner.invoke(app, ["logs"])
+    assert result.exit_code == 1
+
+
+@patch("openoutreach.cli.stream_logs", side_effect=ConnectionError("refused"))
+def test_logs_connection_error(mock_stream):
+    from openoutreach.config import save
+
+    save({
+        "droplet_ip": "1.2.3.4",
+        "server_cert": "SERVERCERT",
+        "client_cert": "CLIENTCERT",
+        "client_key": "CLIENTKEY",
+    })
+
+    result = runner.invoke(app, ["logs"])
     assert result.exit_code == 1
 
 

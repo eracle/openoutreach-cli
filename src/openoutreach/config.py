@@ -29,11 +29,12 @@ def load() -> dict:
 
 
 def save(data: dict) -> None:
-    """Merge *data* into the credentials file."""
+    """Merge *data* into the credentials file (owner-only permissions)."""
     current = load()
     current.update(data)
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CREDENTIALS_FILE.write_text(json.dumps(current, indent=2) + "\n")
+    CREDENTIALS_FILE.chmod(0o600)
 
 
 def get_token() -> str | None:
