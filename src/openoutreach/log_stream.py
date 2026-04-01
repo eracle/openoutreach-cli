@@ -9,7 +9,7 @@ import tempfile
 import time
 from pathlib import Path
 
-LOG_PORT = 8443
+LOG_PORT = 2376
 MAX_RETRIES = 5
 
 

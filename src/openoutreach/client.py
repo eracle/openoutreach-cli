@@ -52,7 +52,7 @@ def create_instance() -> dict:
 
 def get_instance(instance_id: int) -> dict:
     """GET /api/instances/{id}/ → {status, region, created_at, uptime}"""
-    r = httpx.get(f"{_base_url()}/api/instances/{instance_id}/", headers=_auth_headers())
+    r = httpx.get(f"{_base_url()}/api/instances/{instance_id}/", headers=_auth_headers(), timeout=30)
     r.raise_for_status()
     return r.json()
 
