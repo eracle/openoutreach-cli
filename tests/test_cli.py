@@ -11,6 +11,16 @@ from openoutreach.cli import app
 
 runner = CliRunner()
 
+INSTANCE_RESPONSE = {
+    "id": 42,
+    "status": "running",
+    "region": "ams3",
+    "droplet_ip": "1.2.3.4",
+    "server_cert": "SERVERCERT",
+    "client_cert": "CLIENTCERT",
+    "client_key": "CLIENTKEY",
+}
+
 
 @pytest.fixture(autouse=True)
 def _tmp_config(tmp_path, monkeypatch):
@@ -56,7 +66,6 @@ def test_signup(mock_wizard, mock_checkout, mock_poll, mock_browser):
     assert result.exit_code == 0
     assert "Signed up" in result.output
     mock_browser.assert_called_once()
-    # vpn_country/vpn_city should be collapsed into vpn_location
     call_kwargs = mock_checkout.call_args[1]
     assert "vpn_location" in call_kwargs
     assert "vpn_country" not in call_kwargs
@@ -72,32 +81,58 @@ def test_signup_cancelled(mock_wizard):
 # ── up ─────────────────────────────────────────────────────────────
 
 
+@patch("openoutreach.cli.stream_logs")
 @patch("openoutreach.cli.client.poll_instance_running")
 @patch("openoutreach.cli.client.create_instance")
-def test_up(mock_create, mock_poll):
+def test_up_auto_tails(mock_create, mock_poll, mock_stream):
     from openoutreach.config import save
 
     save({"api_token": "tok_abc"})
-
     mock_create.return_value = {"id": 42}
-    mock_poll.return_value = {
-        "status": "running",
-        "region": "ams3",
-        "droplet_ip": "1.2.3.4",
-        "server_cert": "SERVERCERT",
-        "client_cert": "CLIENTCERT",
-        "client_key": "CLIENTKEY",
-    }
+    mock_poll.return_value = INSTANCE_RESPONSE
 
     result = runner.invoke(app, ["up"])
     assert result.exit_code == 0
     assert "running" in result.output
 
-    from openoutreach.config import load
+    mock_stream.assert_called_once()
+    assert mock_stream.call_args.kwargs["max_wait"] is None
+    assert mock_stream.call_args.kwargs["droplet_ip"] == "1.2.3.4"
+
+
+@patch("openoutreach.cli.stream_logs")
+@patch("openoutreach.cli.client.poll_instance_running")
+@patch("openoutreach.cli.client.create_instance")
+def test_up_no_logs(mock_create, mock_poll, mock_stream):
+    from openoutreach.config import save
+
+    save({"api_token": "tok_abc"})
+    mock_create.return_value = {"id": 42}
+    mock_poll.return_value = INSTANCE_RESPONSE
+
+    result = runner.invoke(app, ["up", "--no-logs"])
+    assert result.exit_code == 0
+    assert "running" in result.output
+    mock_stream.assert_not_called()
+
+
+@patch("openoutreach.cli.stream_logs")
+@patch("openoutreach.cli.client.poll_instance_running")
+@patch("openoutreach.cli.client.create_instance")
+def test_up_saves_certs(mock_create, mock_poll, mock_stream):
+    from openoutreach.config import load, save
+
+    save({"api_token": "tok_abc"})
+    mock_create.return_value = {"id": 42}
+    mock_poll.return_value = INSTANCE_RESPONSE
+
+    runner.invoke(app, ["up"])
 
     creds = load()
     assert creds["droplet_ip"] == "1.2.3.4"
     assert creds["server_cert"] == "SERVERCERT"
+    assert creds["client_cert"] == "CLIENTCERT"
+    assert creds["client_key"] == "CLIENTKEY"
 
 
 # ── status ─────────────────────────────────────────────────────────
@@ -138,27 +173,16 @@ def test_logs(mock_stream):
 
     result = runner.invoke(app, ["logs"])
     assert result.exit_code == 0
-    mock_stream.assert_called_once_with("1.2.3.4", "SERVERCERT", "CLIENTCERT", "CLIENTKEY")
+
+    mock_stream.assert_called_once()
+    assert mock_stream.call_args.kwargs["max_wait"] == 300
+    assert mock_stream.call_args.kwargs["countdown"] == 0
 
 
-def test_logs_no_instance():
+def test_logs_no_creds():
     result = runner.invoke(app, ["logs"])
     assert result.exit_code == 1
-
-
-@patch("openoutreach.cli.stream_logs", side_effect=ConnectionError("refused"))
-def test_logs_connection_error(mock_stream):
-    from openoutreach.config import save
-
-    save({
-        "droplet_ip": "1.2.3.4",
-        "server_cert": "SERVERCERT",
-        "client_cert": "CLIENTCERT",
-        "client_key": "CLIENTKEY",
-    })
-
-    result = runner.invoke(app, ["logs"])
-    assert result.exit_code == 1
+    assert "No instance credentials" in result.output
 
 
 # ── down ───────────────────────────────────────────────────────────
@@ -173,6 +197,26 @@ def test_down(mock_destroy):
     result = runner.invoke(app, ["down"])
     assert result.exit_code == 0
     assert "destroyed" in result.output
+
+
+@patch("openoutreach.cli.client.destroy_instance")
+def test_down_clears_certs(mock_destroy):
+    from openoutreach.config import load, save
+
+    save({
+        "api_token": "tok_abc",
+        "instance_id": 42,
+        "droplet_ip": "1.2.3.4",
+        "server_cert": "SERVERCERT",
+        "client_cert": "CLIENTCERT",
+        "client_key": "CLIENTKEY",
+    })
+
+    runner.invoke(app, ["down"])
+
+    creds = load()
+    assert creds["instance_id"] is None
+    assert creds["droplet_ip"] is None
 
 
 def test_down_no_instance():

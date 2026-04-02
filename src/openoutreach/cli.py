@@ -70,7 +70,9 @@ def signup() -> None:
 
 
 @app.command()
-def up() -> None:
+def up(
+    no_logs: bool = typer.Option(False, "--no-logs", help="Skip auto-tailing logs after provisioning."),
+) -> None:
     """Provision and start your cloud instance."""
     config.require_token()
 
@@ -89,13 +91,26 @@ def up() -> None:
     with console.status("Waiting for instance to start…"):
         info = client.poll_instance_running(instance_id)
 
+    droplet_ip = info["droplet_ip"]
     config.save({
-        "droplet_ip": info["droplet_ip"],
+        "droplet_ip": droplet_ip,
         "server_cert": info["server_cert"],
         "client_cert": info["client_cert"],
         "client_key": info["client_key"],
     })
-    console.print(f"[green]✓[/green] Instance running — region: {info['region']}")
+    console.print(f"[green]✓[/green] Instance running — region: {info['region']} ({droplet_ip})")
+
+    if no_logs:
+        return
+
+    stream_logs(
+        droplet_ip=droplet_ip,
+        server_cert=info["server_cert"],
+        client_cert=info["client_cert"],
+        client_key=info["client_key"],
+        console=console,
+        max_wait=None,
+    )
 
 
 @app.command()
@@ -120,21 +135,20 @@ def status() -> None:
 def logs() -> None:
     """Stream live logs from your cloud instance (mTLS, tail -f style)."""
     creds = config.load()
-
-    droplet_ip = creds.get("droplet_ip")
-    server_cert = creds.get("server_cert")
-    client_cert = creds.get("client_cert")
-    client_key = creds.get("client_key")
-
-    if not all([droplet_ip, server_cert, client_cert, client_key]):
-        err.print("[red]No instance found.[/red] Run [bold]openoutreach up[/bold] first.")
+    required = ("droplet_ip", "server_cert", "client_cert", "client_key")
+    if not all(creds.get(k) for k in required):
+        err.print("[red]No instance credentials found.[/red] Run [bold]openoutreach up[/bold] first.")
         raise SystemExit(1)
 
-    try:
-        stream_logs(droplet_ip, server_cert, client_cert, client_key)
-    except ConnectionError as exc:
-        err.print(f"[red]Could not connect to log stream:[/red] {exc}")
-        raise SystemExit(1)
+    stream_logs(
+        droplet_ip=creds["droplet_ip"],
+        server_cert=creds["server_cert"],
+        client_cert=creds["client_cert"],
+        client_key=creds["client_key"],
+        console=console,
+        max_wait=300,
+        countdown=0,
+    )
 
 
 @app.command()
