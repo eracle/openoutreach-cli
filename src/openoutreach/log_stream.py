@@ -152,7 +152,12 @@ def stream_logs(
             while True:
                 try:
                     _read_loop(sock, console)
-                except (OSError, ssl.SSLError, ConnectionError):
+                except ConnectionError:
+                    # Clean close — server shut down the stream.
+                    sock.close()
+                    console.print("\n[yellow]Instance stopped.[/yellow]")
+                    return
+                except (OSError, ssl.SSLError):
                     sock.close()
                     console.print("[yellow][reconnecting...][/yellow]")
                     sock = _connect(
