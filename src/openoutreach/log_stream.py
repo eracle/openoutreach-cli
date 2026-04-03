@@ -16,7 +16,7 @@ from rich.console import Console
 LOG_PORT = 2376
 BACKOFF_CAP_S = 10.0
 IDLE_TIMEOUT_S = 60.0
-COUNTDOWN_S = 15
+MAX_WAIT_S = 60.0
 MAX_RECONNECT_ATTEMPTS = 10
 
 
@@ -25,11 +25,7 @@ MAX_RECONNECT_ATTEMPTS = 10
 
 @contextlib.contextmanager
 def _tls_context(server_cert: str, client_cert: str, client_key: str):
-    """Yield an mTLS ``ssl.SSLContext`` built from PEM strings.
-
-    Writes certs to temporary files (required by the ``ssl`` module),
-    restricted to ``0o600``, and cleans them up on exit.
-    """
+    """Yield an mTLS ``ssl.SSLContext`` built from PEM strings."""
     pems = [
         ("client-cert", client_cert),
         ("client-key", client_key),
@@ -51,7 +47,7 @@ def _tls_context(server_cert: str, client_cert: str, client_key: str):
 
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False  # self-signed, CN won't match IP
-        ctx.verify_mode = ssl.CERT_REQUIRED  # still verify the cert chain
+        ctx.verify_mode = ssl.CERT_REQUIRED
         ctx.load_cert_chain(str(cert_path), str(key_path))
         ctx.load_verify_locations(str(ca_path))
         yield ctx
@@ -61,90 +57,54 @@ def _tls_context(server_cert: str, client_cert: str, client_key: str):
 
 
 def _open_connection(ip: str, port: int, ctx: ssl.SSLContext) -> ssl.SSLSocket:
-    """Open a single mTLS connection to *ip*:*port*."""
     raw = socket.create_connection((ip, port), timeout=10)
     return ctx.wrap_socket(raw, server_hostname="logs")
 
 
-# ── Backoff helper ────────────────────────────────────────────────
+# ── Connection with backoff ──────────────────────────────────────
 
 
-class Backoff:
-    """Exponential backoff with a cap, resettable."""
-
-    def __init__(self, initial: float = 1.0, cap: float = BACKOFF_CAP_S):
-        self._initial = initial
-        self._cap = cap
-        self._current = initial
-
-    def wait(self) -> None:
-        time.sleep(self._current)
-        self._current = min(self._current * 2, self._cap)
-
-    @property
-    def current(self) -> float:
-        return self._current
-
-    def reset(self) -> None:
-        self._current = self._initial
-
-
-# ── Connection loop ───────────────────────────────────────────────
-
-
-def _wait_for_connection(
+def _connect(
     ip: str,
     port: int,
     ctx: ssl.SSLContext,
     console: Console,
-    deadline: float | None,
+    *,
+    max_attempts: int | None = None,
+    deadline: float | None = None,
+    label: str = "Waiting for log stream...",
 ) -> ssl.SSLSocket:
-    """Retry until the sidecar accepts a connection, or *deadline* expires."""
-    backoff = Backoff()
-    with console.status("Waiting for log stream...") as spinner:
+    """Retry connecting with exponential backoff.
+
+    Stops when *max_attempts* is exhausted or *deadline* is passed.
+    """
+    if max_attempts is None and deadline is None:
+        raise ValueError("max_attempts or deadline required")
+    delay = 1.0
+    attempt = 0
+    with console.status(label) as spinner:
         while True:
             try:
                 return _open_connection(ip, port, ctx)
             except (OSError, ssl.SSLError):
-                if deadline is not None and time.monotonic() + backoff.current > deadline:
-                    console.print(
-                        f"[red]Could not connect to log stream at {ip}:{port}[/red]",
-                    )
-                    raise SystemExit(1)
-                spinner.update(f"Waiting for log stream... retry in {backoff.current:.0f}s")
-                backoff.wait()
+                attempt += 1
+                if max_attempts is not None and attempt >= max_attempts:
+                    break
+                if deadline is not None and time.monotonic() + delay > deadline:
+                    break
+                spinner.update(f"{label} retry in {delay:.0f}s")
+                time.sleep(delay)
+                delay = min(delay * 2, BACKOFF_CAP_S)
 
-
-def _reconnect(
-    ip: str, port: int, ctx: ssl.SSLContext, console: Console,
-) -> ssl.SSLSocket:
-    """Re-establish a dropped connection with backoff.
-
-    Gives up after ``MAX_RECONNECT_ATTEMPTS`` consecutive failures,
-    which likely means the droplet was destroyed.
-    """
-    console.print("[yellow][reconnecting...][/yellow]")
-    backoff = Backoff()
-    for _ in range(MAX_RECONNECT_ATTEMPTS):
-        try:
-            sock = _open_connection(ip, port, ctx)
-            console.print("[green][reconnected][/green]")
-            return sock
-        except (OSError, ssl.SSLError):
-            backoff.wait()
-    console.print("[red]Lost connection to instance.[/red]")
+    console.print(f"[red]Could not connect to {ip}:{port}[/red]")
     raise SystemExit(1)
 
 
-# ── Read loop ─────────────────────────────────────────────────────
+# ── Read loop ────────────────────────────────────────────────────
 
 
 def _read_loop(sock: ssl.SSLSocket, console: Console) -> None:
-    """Print data from *sock* until the connection drops.
-
-    Prints an idle indicator if nothing arrives for ``IDLE_TIMEOUT_S``.
-    Raises ``ConnectionError`` when the stream ends or breaks.
-    """
+    """Print data from *sock* until the connection drops."""
     sock.settimeout(IDLE_TIMEOUT_S)
     while True:
         try:
@@ -158,18 +118,7 @@ def _read_loop(sock: ssl.SSLSocket, console: Console) -> None:
         console.print(data.decode(errors="replace"), end="", highlight=False)
 
 
-# ── Countdown ─────────────────────────────────────────────────────
-
-
-def _countdown(seconds: int, console: Console) -> None:
-    """Visual countdown giving cloud-init time to build the sidecar."""
-    with console.status("") as spinner:
-        for remaining in range(seconds, 0, -1):
-            spinner.update(f"Connecting to log stream in {remaining}s...")
-            time.sleep(1)
-
-
-# ── Public API ────────────────────────────────────────────────────
+# ── Public API ───────────────────────────────────────────────────
 
 
 def stream_logs(
@@ -179,8 +128,7 @@ def stream_logs(
     client_key: str,
     *,
     console: Console | None = None,
-    max_wait: float | None = None,
-    countdown: int = COUNTDOWN_S,
+    max_wait: float = MAX_WAIT_S,
 ) -> None:
     """Stream logs from the droplet's mTLS sidecar until Ctrl-C.
 
@@ -190,19 +138,14 @@ def stream_logs(
         client_cert: PEM client certificate.
         client_key: PEM client private key.
         console: Rich console for output (default: new Console).
-        max_wait: Max seconds to wait for the sidecar. ``None`` = forever.
-        countdown: Seconds to wait before the first attempt, giving
-            cloud-init time to build the sidecar image.
+        max_wait: Max seconds to wait for the sidecar (default: 60).
     """
     if console is None:
         console = Console()
 
     with _tls_context(server_cert, client_cert, client_key) as ctx:
-        if countdown > 0:
-            _countdown(countdown, console)
-
-        deadline = None if max_wait is None else time.monotonic() + max_wait
-        sock = _wait_for_connection(droplet_ip, LOG_PORT, ctx, console, deadline)
+        deadline = time.monotonic() + max_wait
+        sock = _connect(droplet_ip, LOG_PORT, ctx, console, deadline=deadline)
         console.print("[green]Connected.[/green]")
 
         try:
@@ -211,7 +154,13 @@ def stream_logs(
                     _read_loop(sock, console)
                 except (OSError, ssl.SSLError, ConnectionError):
                     sock.close()
-                    sock = _reconnect(droplet_ip, LOG_PORT, ctx, console)
+                    console.print("[yellow][reconnecting...][/yellow]")
+                    sock = _connect(
+                        droplet_ip, LOG_PORT, ctx, console,
+                        max_attempts=MAX_RECONNECT_ATTEMPTS,
+                        label="Reconnecting...",
+                    )
+                    console.print("[green][reconnected][/green]")
         except KeyboardInterrupt:
             console.print("\n[dim]Log stream detached (instance still running).[/dim]")
         finally:

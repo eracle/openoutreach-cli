@@ -109,7 +109,6 @@ def up(
         client_cert=info["client_cert"],
         client_key=info["client_key"],
         console=console,
-        max_wait=None,
     )
 
 
@@ -146,8 +145,6 @@ def logs() -> None:
         client_cert=creds["client_cert"],
         client_key=creds["client_key"],
         console=console,
-        max_wait=300,
-        countdown=0,
     )
 
 

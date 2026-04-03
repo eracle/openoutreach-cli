@@ -96,7 +96,6 @@ def test_up_auto_tails(mock_create, mock_poll, mock_stream):
     assert "running" in result.output
 
     mock_stream.assert_called_once()
-    assert mock_stream.call_args.kwargs["max_wait"] is None
     assert mock_stream.call_args.kwargs["droplet_ip"] == "1.2.3.4"
 
 
@@ -175,8 +174,7 @@ def test_logs(mock_stream):
     assert result.exit_code == 0
 
     mock_stream.assert_called_once()
-    assert mock_stream.call_args.kwargs["max_wait"] == 300
-    assert mock_stream.call_args.kwargs["countdown"] == 0
+    assert mock_stream.call_args.kwargs["droplet_ip"] == "1.2.3.4"
 
 
 def test_logs_no_creds():
