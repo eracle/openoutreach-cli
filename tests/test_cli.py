@@ -21,6 +21,35 @@ INSTANCE_RESPONSE = {
     "client_key": "CLIENTKEY",
 }
 
+WIZARD_ANSWERS = {
+    "vpn_country": "Netherlands",
+    "vpn_city": "Amsterdam",
+    "campaign_name": "test",
+    "product_description": "A test product",
+    "campaign_objective": "sell to CTOs",
+    "booking_link": "",
+    "seed_urls": "",
+    "linkedin_email": "a@b.com",
+    "linkedin_password": "secret",
+    "llm_api_key": "sk-test",
+    "ai_model": "gpt-4o",
+    "llm_api_base": "https://api.openai.com/v1",
+    "newsletter": True,
+    "connect_daily_limit": 50,
+    "connect_weekly_limit": 250,
+    "follow_up_daily_limit": 100,
+    "legal_acceptance": True,
+}
+
+# Config fields saved after wizard (legal_acceptance stripped).
+SAVED_CONFIG = {k: v for k, v in WIZARD_ANSWERS.items() if k != "legal_acceptance"}
+
+
+def _save_config_and_token():
+    """Pre-populate credentials with config + api_token."""
+    from openoutreach.config import save
+    save({**SAVED_CONFIG, "api_token": "tok_abc"})
+
 
 @pytest.fixture(autouse=True)
 def _tmp_config(tmp_path, monkeypatch):
@@ -29,7 +58,34 @@ def _tmp_config(tmp_path, monkeypatch):
     monkeypatch.setattr("openoutreach.config.CREDENTIALS_FILE", tmp_path / "credentials.json")
 
 
-# ── signup ─────────────────────────────────────────────────────────
+# ── config ────────────────────────────────────────────────────────
+
+
+@patch("openoutreach.cli.ask_wizard")
+def test_config_saves_locally(mock_wizard):
+    from openoutreach.config import load
+
+    mock_wizard.return_value = WIZARD_ANSWERS.copy()
+
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == 0
+    assert "Configuration saved" in result.output
+
+    creds = load()
+    assert creds["vpn_country"] == "Netherlands"
+    assert creds["vpn_city"] == "Amsterdam"
+    assert creds["linkedin_email"] == "a@b.com"
+    assert "legal_acceptance" not in creds
+
+
+@patch("openoutreach.cli.ask_wizard")
+def test_config_cancelled(mock_wizard):
+    mock_wizard.return_value = None
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == 1
+
+
+# ── signup ────────────────────────────────────────────────────────
 
 
 @patch("openoutreach.cli.webbrowser.open")
@@ -37,25 +93,7 @@ def _tmp_config(tmp_path, monkeypatch):
 @patch("openoutreach.cli.client.create_checkout")
 @patch("openoutreach.cli.ask_wizard")
 def test_signup(mock_wizard, mock_checkout, mock_poll, mock_browser):
-    mock_wizard.return_value = {
-        "vpn_country": "Netherlands",
-        "vpn_city": "Amsterdam",
-        "campaign_name": "test",
-        "product_description": "A test product",
-        "campaign_objective": "sell to CTOs",
-        "booking_link": "",
-        "seed_urls": "",
-        "linkedin_email": "a@b.com",
-        "linkedin_password": "secret",
-        "llm_api_key": "sk-test",
-        "ai_model": "gpt-4o",
-        "llm_api_base": "https://api.openai.com/v1",
-        "newsletter": True,
-        "connect_daily_limit": 50,
-        "connect_weekly_limit": 250,
-        "follow_up_daily_limit": 100,
-        "legal_acceptance": True,
-    }
+    mock_wizard.return_value = WIZARD_ANSWERS.copy()
     mock_checkout.return_value = {
         "checkout_url": "https://checkout.stripe.com/test",
         "session_id": "sess_123",
@@ -66,9 +104,26 @@ def test_signup(mock_wizard, mock_checkout, mock_poll, mock_browser):
     assert result.exit_code == 0
     assert "Signed up" in result.output
     mock_browser.assert_called_once()
-    call_kwargs = mock_checkout.call_args[1]
-    assert "vpn_location" in call_kwargs
-    assert "vpn_country" not in call_kwargs
+    mock_checkout.assert_called_once_with("a@b.com")
+
+
+@patch("openoutreach.cli.webbrowser.open")
+@patch("openoutreach.cli.client.poll_auth_status")
+@patch("openoutreach.cli.client.create_checkout")
+def test_signup_with_existing_config(mock_checkout, mock_poll, mock_browser):
+    """If config already exists, signup skips the wizard."""
+    from openoutreach.config import save
+    save(SAVED_CONFIG)
+
+    mock_checkout.return_value = {
+        "checkout_url": "https://checkout.stripe.com/test",
+        "session_id": "sess_123",
+    }
+    mock_poll.return_value = {"api_token": "tok_abc", "customer_id": "cus_123"}
+
+    result = runner.invoke(app, ["signup"])
+    assert result.exit_code == 0
+    mock_checkout.assert_called_once_with("a@b.com")
 
 
 @patch("openoutreach.cli.ask_wizard")
@@ -78,16 +133,14 @@ def test_signup_cancelled(mock_wizard):
     assert result.exit_code == 1
 
 
-# ── up ─────────────────────────────────────────────────────────────
+# ── up ────────────────────────────────────────────────────────────
 
 
 @patch("openoutreach.cli.stream_logs")
 @patch("openoutreach.cli.client.poll_instance_running")
 @patch("openoutreach.cli.client.create_instance")
 def test_up_auto_tails(mock_create, mock_poll, mock_stream):
-    from openoutreach.config import save
-
-    save({"api_token": "tok_abc"})
+    _save_config_and_token()
     mock_create.return_value = {"id": 42}
     mock_poll.return_value = INSTANCE_RESPONSE
 
@@ -98,14 +151,17 @@ def test_up_auto_tails(mock_create, mock_poll, mock_stream):
     mock_stream.assert_called_once()
     assert mock_stream.call_args.kwargs["droplet_ip"] == "1.2.3.4"
 
+    # Verify config was sent to create_instance.
+    config_arg = mock_create.call_args[0][0]
+    assert config_arg["linkedin_email"] == "a@b.com"
+    assert config_arg["vpn_country"] == "Netherlands"
+
 
 @patch("openoutreach.cli.stream_logs")
 @patch("openoutreach.cli.client.poll_instance_running")
 @patch("openoutreach.cli.client.create_instance")
 def test_up_no_logs(mock_create, mock_poll, mock_stream):
-    from openoutreach.config import save
-
-    save({"api_token": "tok_abc"})
+    _save_config_and_token()
     mock_create.return_value = {"id": 42}
     mock_poll.return_value = INSTANCE_RESPONSE
 
@@ -119,9 +175,9 @@ def test_up_no_logs(mock_create, mock_poll, mock_stream):
 @patch("openoutreach.cli.client.poll_instance_running")
 @patch("openoutreach.cli.client.create_instance")
 def test_up_saves_certs(mock_create, mock_poll, mock_stream):
-    from openoutreach.config import load, save
+    from openoutreach.config import load
 
-    save({"api_token": "tok_abc"})
+    _save_config_and_token()
     mock_create.return_value = {"id": 42}
     mock_poll.return_value = INSTANCE_RESPONSE
 
@@ -134,7 +190,65 @@ def test_up_saves_certs(mock_create, mock_poll, mock_stream):
     assert creds["client_key"] == "CLIENTKEY"
 
 
-# ── status ─────────────────────────────────────────────────────────
+@patch("openoutreach.cli.stream_logs")
+@patch("openoutreach.cli.client.poll_instance_running")
+@patch("openoutreach.cli.client.create_instance")
+@patch("openoutreach.cli.webbrowser.open")
+@patch("openoutreach.cli.client.poll_auth_status")
+@patch("openoutreach.cli.client.create_checkout")
+@patch("openoutreach.cli.ask_wizard")
+def test_up_chains_config_and_signup(
+    mock_wizard, mock_checkout, mock_poll_auth, mock_browser,
+    mock_create, mock_poll, mock_stream,
+):
+    """From scratch: up chains config → signup → provision."""
+    mock_wizard.return_value = WIZARD_ANSWERS.copy()
+    mock_checkout.return_value = {
+        "checkout_url": "https://checkout.stripe.com/test",
+        "session_id": "sess_123",
+    }
+    mock_poll_auth.return_value = {"api_token": "tok_abc", "customer_id": "cus_123"}
+    mock_create.return_value = {"id": 42}
+    mock_poll.return_value = INSTANCE_RESPONSE
+
+    result = runner.invoke(app, ["up"])
+    assert result.exit_code == 0
+
+    mock_wizard.assert_called_once()
+    mock_checkout.assert_called_once_with("a@b.com")
+    mock_create.assert_called_once()
+
+
+@patch("openoutreach.cli.stream_logs")
+@patch("openoutreach.cli.client.poll_instance_running")
+@patch("openoutreach.cli.client.create_instance")
+@patch("openoutreach.cli.webbrowser.open")
+@patch("openoutreach.cli.client.poll_auth_status")
+@patch("openoutreach.cli.client.create_checkout")
+def test_up_chains_signup_only(
+    mock_checkout, mock_poll_auth, mock_browser,
+    mock_create, mock_poll, mock_stream,
+):
+    """Config exists but no token: up chains signup → provision (no wizard)."""
+    from openoutreach.config import save
+    save(SAVED_CONFIG)
+
+    mock_checkout.return_value = {
+        "checkout_url": "https://checkout.stripe.com/test",
+        "session_id": "sess_123",
+    }
+    mock_poll_auth.return_value = {"api_token": "tok_abc", "customer_id": "cus_123"}
+    mock_create.return_value = {"id": 42}
+    mock_poll.return_value = INSTANCE_RESPONSE
+
+    result = runner.invoke(app, ["up"])
+    assert result.exit_code == 0
+
+    mock_checkout.assert_called_once_with("a@b.com")
+    mock_create.assert_called_once()
+
+
+# ── status ────────────────────────────────────────────────────────
 
 
 @patch("openoutreach.cli.client.get_instance")
@@ -183,7 +297,7 @@ def test_logs_no_creds():
     assert "No instance credentials" in result.output
 
 
-# ── down ───────────────────────────────────────────────────────────
+# ── down ──────────────────────────────────────────────────────────
 
 
 @patch("openoutreach.cli.client.destroy_instance")

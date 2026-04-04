@@ -20,9 +20,9 @@ def _auth_headers() -> dict[str, str]:
 # ── Auth / Checkout ────────────────────────────────────────────────
 
 
-def create_checkout(**answers) -> dict:
+def create_checkout(linkedin_email: str) -> dict:
     """POST /api/checkout/ → {checkout_url, session_id}"""
-    r = httpx.post(f"{_base_url()}/api/checkout/", json=answers)
+    r = httpx.post(f"{_base_url()}/api/checkout/", json={"linkedin_email": linkedin_email})
     r.raise_for_status()
     return r.json()
 
@@ -43,9 +43,14 @@ def poll_auth_status(session_id: str, *, timeout: int = 300, interval: int = 3) 
 # ── Instances ──────────────────────────────────────────────────────
 
 
-def create_instance() -> dict:
+def create_instance(config: dict) -> dict:
     """POST /api/instances/ → {instance_id}"""
-    r = httpx.post(f"{_base_url()}/api/instances/", headers=_auth_headers(), timeout=60)
+    r = httpx.post(
+        f"{_base_url()}/api/instances/",
+        headers=_auth_headers(),
+        json=config,
+        timeout=60,
+    )
     r.raise_for_status()
     return r.json()
 

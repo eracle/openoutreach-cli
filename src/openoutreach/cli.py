@@ -1,4 +1,4 @@
-"""OpenOutreach CLI — 5 commands: signup, up, status, logs, down."""
+"""OpenOutreach CLI — commands: config, signup, up, status, logs, down."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ import httpx
 import typer
 from rich.console import Console
 
-from openoutreach import __version__, client, config
+from openoutreach import __version__, client
+from openoutreach import config as config_mod
 from openoutreach.log_stream import stream_logs
 from openoutreach.prompts import PREMIUM_QUESTIONS
 from openoutreach.wizard import ask as ask_wizard
@@ -29,27 +30,61 @@ def main(
     version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True),
 ) -> None:
     if local:
-        config.LOCAL = True
+        config_mod.LOCAL = True
     if ctx.invoked_subcommand is None:
         typer.echo(ctx.get_help())
         raise typer.Exit()
+
 console = Console()
 err = Console(stderr=True)
 
 
-@app.command()
-def signup() -> None:
-    """Sign up for OpenOutreach Premium via Stripe checkout."""
+# ── Config ──────────────────────────────────────────────────────
+
+
+def _run_config_wizard() -> dict:
+    """Run the interactive wizard and return cleaned answers."""
     answers = ask_wizard(PREMIUM_QUESTIONS)
     if answers is None:
         err.print("Cancelled.")
         raise SystemExit(1)
 
-    answers["vpn_location"] = answers.pop("vpn_city") or answers.pop("vpn_country")
-    answers.pop("vpn_country", None)
+    answers.pop("legal_acceptance", None)
+    return answers
+
+
+@app.command("config")
+def config_cmd() -> None:
+    """Run the configuration wizard (saves settings locally)."""
+    answers = _run_config_wizard()
+    config_mod.save(answers)
+    console.print("[green]✓[/green] Configuration saved.")
+
+
+# ── Signup ──────────────────────────────────────────────────────
+
+
+def _ensure_config() -> dict:
+    """Return instance config, running the wizard if missing."""
+    instance_config = config_mod.get_instance_config()
+    if instance_config:
+        return instance_config
+    console.print("No configuration found — starting wizard.\n")
+    answers = _run_config_wizard()
+    config_mod.save(answers)
+    instance_config = config_mod.get_instance_config()
+    if not instance_config:
+        err.print("[red]Configuration incomplete.[/red] Run [bold]openoutreach config[/bold] and fill all required fields.")
+        raise SystemExit(1)
+    return instance_config
+
+
+def _run_signup() -> None:
+    """Run Stripe checkout and save credentials."""
+    instance_config = _ensure_config()
 
     with console.status("Creating checkout session…"):
-        data = client.create_checkout(**answers)
+        data = client.create_checkout(instance_config["linkedin_email"])
 
     checkout_url = data["checkout_url"]
     session_id = data["session_id"]
@@ -64,9 +99,18 @@ def signup() -> None:
         console.print("Subscription already active — reusing credentials.")
         result = client.poll_auth_status(session_id)
 
-    config.save({"api_token": result["api_token"], "customer_id": result["customer_id"]})
+    config_mod.save({"api_token": result["api_token"], "customer_id": result["customer_id"]})
     console.print("[green]✓[/green] Signed up! Credentials saved.")
+
+
+@app.command()
+def signup() -> None:
+    """Sign up for OpenOutreach Premium via Stripe checkout."""
+    _run_signup()
     console.print("Run [bold]openoutreach up[/bold] to provision your cloud instance.")
+
+
+# ── Up ──────────────────────────────────────────────────────────
 
 
 @app.command()
@@ -74,11 +118,17 @@ def up(
     no_logs: bool = typer.Option(False, "--no-logs", help="Skip auto-tailing logs after provisioning."),
 ) -> None:
     """Provision and start your cloud instance."""
-    config.require_token()
+    # Chain: config → signup → provision.
+    instance_config = _ensure_config()
+
+    if not config_mod.get_token():
+        _run_signup()
+
+    config_mod.require_token()
 
     try:
         with console.status("Creating instance…"):
-            data = client.create_instance()
+            data = client.create_instance(instance_config)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 409:
             err.print("[red]You already have an active instance.[/red] Run [bold]openoutreach down[/bold] first.")
@@ -86,13 +136,13 @@ def up(
         raise
 
     instance_id = data["id"]
-    config.save({"instance_id": instance_id})
+    config_mod.save({"instance_id": instance_id})
 
     with console.status("Waiting for instance to start…"):
         info = client.poll_instance_running(instance_id)
 
     droplet_ip = info["droplet_ip"]
-    config.save({
+    config_mod.save({
         "droplet_ip": droplet_ip,
         "server_cert": info["server_cert"],
         "client_cert": info["client_cert"],
@@ -113,16 +163,19 @@ def up(
     )
 
 
+# ── Status / Logs / Down ───────────────────────────────────────
+
+
 @app.command()
 def status() -> None:
     """Show current instance status."""
-    creds = config.load()
+    creds = config_mod.load()
     instance_id = creds.get("instance_id")
     if not instance_id:
         err.print("[red]No instance found.[/red] Run [bold]openoutreach up[/bold] first.")
         raise SystemExit(1)
 
-    config.require_token()
+    config_mod.require_token()
     info = client.get_instance(instance_id)
 
     console.print(f"Status:  [bold]{info['status']}[/bold]")
@@ -134,7 +187,7 @@ def status() -> None:
 @app.command()
 def logs() -> None:
     """Stream live logs from your cloud instance (mTLS, tail -f style)."""
-    creds = config.load()
+    creds = config_mod.load()
     required = ("droplet_ip", "server_cert", "client_cert", "client_key")
     if not all(creds.get(k) for k in required):
         err.print("[red]No instance credentials found.[/red] Run [bold]openoutreach up[/bold] first.")
@@ -152,18 +205,18 @@ def logs() -> None:
 @app.command()
 def down() -> None:
     """Destroy your cloud instance."""
-    creds = config.load()
+    creds = config_mod.load()
     instance_id = creds.get("instance_id")
     if not instance_id:
         err.print("[red]No instance found.[/red]")
         raise SystemExit(1)
 
-    config.require_token()
+    config_mod.require_token()
 
     with console.status("Destroying instance…"):
         client.destroy_instance(instance_id)
 
-    config.save({
+    config_mod.save({
         "instance_id": None,
         "droplet_ip": None,
         "server_cert": None,

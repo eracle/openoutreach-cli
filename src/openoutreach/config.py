@@ -53,3 +53,40 @@ def require_token() -> str:
         )
         raise SystemExit(1)
     return token
+
+
+# Keys sent to POST /api/instances/ when provisioning.
+INSTANCE_CONFIG_REQUIRED = [
+    "campaign_name",
+    "product_description",
+    "campaign_objective",
+    "linkedin_email",
+    "linkedin_password",
+    "llm_api_key",
+    "ai_model",
+]
+
+INSTANCE_CONFIG_OPTIONAL = [
+    "vpn_country",
+    "vpn_city",
+    "booking_link",
+    "seed_urls",
+    "llm_api_base",
+    "newsletter",
+    "connect_daily_limit",
+    "connect_weekly_limit",
+    "follow_up_daily_limit",
+]
+
+INSTANCE_CONFIG_KEYS = INSTANCE_CONFIG_REQUIRED + INSTANCE_CONFIG_OPTIONAL
+
+
+def get_instance_config() -> dict | None:
+    """Extract provisioning config from credentials.
+
+    Returns the config dict if all required keys are present, else None.
+    """
+    creds = load()
+    if not all(creds.get(k) for k in INSTANCE_CONFIG_REQUIRED):
+        return None
+    return {k: creds[k] for k in INSTANCE_CONFIG_KEYS if k in creds}
