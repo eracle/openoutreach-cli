@@ -10,6 +10,7 @@ from rich.console import Console
 
 from openoutreach import __version__, client
 from openoutreach import config as config_mod
+from openoutreach.client import Credentials
 from openoutreach.log_stream import stream_logs
 from openoutreach.prompts import PREMIUM_QUESTIONS
 from openoutreach.wizard import ask as ask_wizard
@@ -79,27 +80,36 @@ def _ensure_config() -> dict:
     return instance_config
 
 
-def _run_signup() -> None:
-    """Run Stripe checkout and save credentials."""
-    instance_config = _ensure_config()
+def _authenticate(linkedin_email: str) -> Credentials:
+    """Run the full checkout flow and return credentials.
 
+    Handles both paths:
+    - Already-active user → token returned immediately.
+    - New user → Stripe checkout → poll until webhook fires.
+    """
     with console.status("Creating checkout session…"):
-        data = client.create_checkout(instance_config["linkedin_email"])
+        result = client.create_checkout(linkedin_email)
 
-    checkout_url = data["checkout_url"]
-    session_id = data["session_id"]
-
-    if checkout_url:
-        console.print(f"Opening checkout: [link={checkout_url}]{checkout_url}[/link]")
-        webbrowser.open(checkout_url)
-
-        with console.status("Waiting for payment…"):
-            result = client.poll_auth_status(session_id)
-    else:
+    if result.is_active:
         console.print("Subscription already active — reusing credentials.")
-        result = client.poll_auth_status(session_id)
+        return result.credentials
 
-    config_mod.save({"api_token": result["api_token"], "customer_id": result["customer_id"]})
+    console.print(f"Opening checkout: [link={result.checkout_url}]{result.checkout_url}[/link]")
+    webbrowser.open(result.checkout_url)
+
+    with console.status("Waiting for payment…"):
+        return client.poll_auth_status(result.session_id)
+
+
+def _save_credentials(credentials: Credentials) -> None:
+    config_mod.save({"api_token": credentials.api_token, "customer_id": credentials.customer_id})
+
+
+def _run_signup() -> None:
+    """Run the full signup flow: config → checkout → save credentials."""
+    instance_config = _ensure_config()
+    credentials = _authenticate(instance_config["linkedin_email"])
+    _save_credentials(credentials)
     console.print("[green]✓[/green] Signed up! Credentials saved.")
 
 
@@ -118,7 +128,6 @@ def up(
     no_logs: bool = typer.Option(False, "--no-logs", help="Skip auto-tailing logs after provisioning."),
 ) -> None:
     """Provision and start your cloud instance."""
-    # Chain: config → signup → provision.
     instance_config = _ensure_config()
 
     if not config_mod.get_token():

@@ -8,6 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from openoutreach.cli import app
+from openoutreach.client import CheckoutResult, Credentials
 
 runner = CliRunner()
 
@@ -92,18 +93,35 @@ def test_config_cancelled(mock_wizard):
 @patch("openoutreach.cli.client.poll_auth_status")
 @patch("openoutreach.cli.client.create_checkout")
 @patch("openoutreach.cli.ask_wizard")
-def test_signup(mock_wizard, mock_checkout, mock_poll, mock_browser):
+def test_signup_new_user(mock_wizard, mock_checkout, mock_poll, mock_browser):
     mock_wizard.return_value = WIZARD_ANSWERS.copy()
-    mock_checkout.return_value = {
-        "checkout_url": "https://checkout.stripe.com/test",
-        "session_id": "sess_123",
-    }
-    mock_poll.return_value = {"api_token": "tok_abc", "customer_id": "cus_123"}
+    mock_checkout.return_value = CheckoutResult(
+        credentials=None,
+        checkout_url="https://checkout.stripe.com/test",
+        session_id="sess_123",
+    )
+    mock_poll.return_value = Credentials(api_token="tok_abc", customer_id="cus_123")
 
     result = runner.invoke(app, ["signup"])
     assert result.exit_code == 0
     assert "Signed up" in result.output
     mock_browser.assert_called_once()
+    mock_checkout.assert_called_once_with("a@b.com")
+
+
+@patch("openoutreach.cli.client.create_checkout")
+@patch("openoutreach.cli.ask_wizard")
+def test_signup_already_active(mock_wizard, mock_checkout):
+    mock_wizard.return_value = WIZARD_ANSWERS.copy()
+    mock_checkout.return_value = CheckoutResult(
+        credentials=Credentials(api_token="tok_abc", customer_id="cus_123"),
+        checkout_url=None,
+        session_id=None,
+    )
+
+    result = runner.invoke(app, ["signup"])
+    assert result.exit_code == 0
+    assert "already active" in result.output
     mock_checkout.assert_called_once_with("a@b.com")
 
 
@@ -115,11 +133,12 @@ def test_signup_with_existing_config(mock_checkout, mock_poll, mock_browser):
     from openoutreach.config import save
     save(SAVED_CONFIG)
 
-    mock_checkout.return_value = {
-        "checkout_url": "https://checkout.stripe.com/test",
-        "session_id": "sess_123",
-    }
-    mock_poll.return_value = {"api_token": "tok_abc", "customer_id": "cus_123"}
+    mock_checkout.return_value = CheckoutResult(
+        credentials=None,
+        checkout_url="https://checkout.stripe.com/test",
+        session_id="sess_123",
+    )
+    mock_poll.return_value = Credentials(api_token="tok_abc", customer_id="cus_123")
 
     result = runner.invoke(app, ["signup"])
     assert result.exit_code == 0
@@ -203,11 +222,12 @@ def test_up_chains_config_and_signup(
 ):
     """From scratch: up chains config → signup → provision."""
     mock_wizard.return_value = WIZARD_ANSWERS.copy()
-    mock_checkout.return_value = {
-        "checkout_url": "https://checkout.stripe.com/test",
-        "session_id": "sess_123",
-    }
-    mock_poll_auth.return_value = {"api_token": "tok_abc", "customer_id": "cus_123"}
+    mock_checkout.return_value = CheckoutResult(
+        credentials=None,
+        checkout_url="https://checkout.stripe.com/test",
+        session_id="sess_123",
+    )
+    mock_poll_auth.return_value = Credentials(api_token="tok_abc", customer_id="cus_123")
     mock_create.return_value = {"id": 42}
     mock_poll.return_value = INSTANCE_RESPONSE
 
@@ -222,10 +242,36 @@ def test_up_chains_config_and_signup(
 @patch("openoutreach.cli.stream_logs")
 @patch("openoutreach.cli.client.poll_instance_running")
 @patch("openoutreach.cli.client.create_instance")
+@patch("openoutreach.cli.client.create_checkout")
+def test_up_chains_signup_already_active(
+    mock_checkout, mock_create, mock_poll, mock_stream,
+):
+    """Config exists, no token, already-active user: up skips Stripe entirely."""
+    from openoutreach.config import save
+    save(SAVED_CONFIG)
+
+    mock_checkout.return_value = CheckoutResult(
+        credentials=Credentials(api_token="tok_abc", customer_id="cus_123"),
+        checkout_url=None,
+        session_id=None,
+    )
+    mock_create.return_value = {"id": 42}
+    mock_poll.return_value = INSTANCE_RESPONSE
+
+    result = runner.invoke(app, ["up"])
+    assert result.exit_code == 0
+
+    mock_checkout.assert_called_once_with("a@b.com")
+    mock_create.assert_called_once()
+
+
+@patch("openoutreach.cli.stream_logs")
+@patch("openoutreach.cli.client.poll_instance_running")
+@patch("openoutreach.cli.client.create_instance")
 @patch("openoutreach.cli.webbrowser.open")
 @patch("openoutreach.cli.client.poll_auth_status")
 @patch("openoutreach.cli.client.create_checkout")
-def test_up_chains_signup_only(
+def test_up_chains_signup_new_user(
     mock_checkout, mock_poll_auth, mock_browser,
     mock_create, mock_poll, mock_stream,
 ):
@@ -233,11 +279,12 @@ def test_up_chains_signup_only(
     from openoutreach.config import save
     save(SAVED_CONFIG)
 
-    mock_checkout.return_value = {
-        "checkout_url": "https://checkout.stripe.com/test",
-        "session_id": "sess_123",
-    }
-    mock_poll_auth.return_value = {"api_token": "tok_abc", "customer_id": "cus_123"}
+    mock_checkout.return_value = CheckoutResult(
+        credentials=None,
+        checkout_url="https://checkout.stripe.com/test",
+        session_id="sess_123",
+    )
+    mock_poll_auth.return_value = Credentials(api_token="tok_abc", customer_id="cus_123")
     mock_create.return_value = {"id": 42}
     mock_poll.return_value = INSTANCE_RESPONSE
 
