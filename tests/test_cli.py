@@ -193,7 +193,8 @@ def test_up_no_logs(mock_create, mock_poll, mock_stream):
 @patch("openoutreach.cli.stream_logs")
 @patch("openoutreach.cli.client.poll_instance_running")
 @patch("openoutreach.cli.client.create_instance")
-def test_up_saves_certs(mock_create, mock_poll, mock_stream):
+def test_up_no_local_instance_state(mock_create, mock_poll, mock_stream):
+    """up should NOT save instance state locally."""
     from openoutreach.config import load
 
     _save_config_and_token()
@@ -203,10 +204,22 @@ def test_up_saves_certs(mock_create, mock_poll, mock_stream):
     runner.invoke(app, ["up"])
 
     creds = load()
-    assert creds["droplet_ip"] == "1.2.3.4"
-    assert creds["server_cert"] == "SERVERCERT"
-    assert creds["client_cert"] == "CLIENTCERT"
-    assert creds["client_key"] == "CLIENTKEY"
+    assert "instance_id" not in creds
+    assert "droplet_ip" not in creds
+    assert "server_cert" not in creds
+
+
+@patch("openoutreach.cli.client.create_instance")
+def test_up_rejects_existing_instance(mock_create):
+    import httpx
+
+    _save_config_and_token()
+    response = httpx.Response(409, json={"error": "You already have an active instance."})
+    mock_create.side_effect = httpx.HTTPStatusError("conflict", request=httpx.Request("POST", "http://x"), response=response)
+
+    result = runner.invoke(app, ["up"])
+    assert result.exit_code == 1
+    assert "already have an active instance" in result.output
 
 
 @patch("openoutreach.cli.stream_logs")
@@ -220,7 +233,7 @@ def test_up_chains_config_and_signup(
     mock_wizard, mock_checkout, mock_poll_auth, mock_browser,
     mock_create, mock_poll, mock_stream,
 ):
-    """From scratch: up chains config → signup → provision."""
+    """From scratch: up chains config -> signup -> provision."""
     mock_wizard.return_value = WIZARD_ANSWERS.copy()
     mock_checkout.return_value = CheckoutResult(
         credentials=None,
@@ -275,7 +288,7 @@ def test_up_chains_signup_new_user(
     mock_checkout, mock_poll_auth, mock_browser,
     mock_create, mock_poll, mock_stream,
 ):
-    """Config exists but no token: up chains signup → provision (no wizard)."""
+    """Config exists but no token: up chains signup -> provision (no wizard)."""
     from openoutreach.config import save
     save(SAVED_CONFIG)
 
@@ -298,19 +311,29 @@ def test_up_chains_signup_new_user(
 # ── status ────────────────────────────────────────────────────────
 
 
-@patch("openoutreach.cli.client.get_instance")
-def test_status(mock_get):
+@patch("openoutreach.cli.client.get_active_instance")
+def test_status(mock_active):
     from openoutreach.config import save
+    save({"api_token": "tok_abc"})
 
-    save({"api_token": "tok_abc", "instance_id": 42})
-    mock_get.return_value = {"status": "running", "region": "ams3", "uptime": "2h"}
+    mock_active.return_value = {"status": "running", "region": "ams3", "uptime": "2h"}
 
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
     assert "running" in result.output
 
 
-def test_status_no_instance():
+@patch("openoutreach.cli.client.get_active_instance", return_value=None)
+def test_status_no_instance(mock_active):
+    from openoutreach.config import save
+    save({"api_token": "tok_abc"})
+
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 1
+    assert "No instance found" in result.output
+
+
+def test_status_no_token():
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 1
 
@@ -319,17 +342,12 @@ def test_status_no_instance():
 
 
 @patch("openoutreach.cli.stream_logs")
-def test_logs(mock_stream):
+@patch("openoutreach.cli.client.get_active_instance")
+def test_logs(mock_active, mock_stream):
     from openoutreach.config import save
+    save({"api_token": "tok_abc"})
 
-    save({
-        "api_token": "tok_abc",
-        "instance_id": 42,
-        "droplet_ip": "1.2.3.4",
-        "server_cert": "SERVERCERT",
-        "client_cert": "CLIENTCERT",
-        "client_key": "CLIENTKEY",
-    })
+    mock_active.return_value = INSTANCE_RESPONSE
 
     result = runner.invoke(app, ["logs"])
     assert result.exit_code == 0
@@ -338,46 +356,59 @@ def test_logs(mock_stream):
     assert mock_stream.call_args.kwargs["droplet_ip"] == "1.2.3.4"
 
 
-def test_logs_no_creds():
+@patch("openoutreach.cli.client.get_active_instance", return_value=None)
+def test_logs_no_instance(mock_active):
+    from openoutreach.config import save
+    save({"api_token": "tok_abc"})
+
     result = runner.invoke(app, ["logs"])
     assert result.exit_code == 1
-    assert "No instance credentials" in result.output
+    assert "No instance found" in result.output
+
+
+def test_logs_no_token():
+    result = runner.invoke(app, ["logs"])
+    assert result.exit_code == 1
 
 
 # ── down ──────────────────────────────────────────────────────────
 
 
 @patch("openoutreach.cli.client.destroy_instance")
-def test_down(mock_destroy):
+@patch("openoutreach.cli.client.get_active_instance")
+def test_down(mock_active, mock_destroy):
     from openoutreach.config import save
+    save({"api_token": "tok_abc"})
 
-    save({"api_token": "tok_abc", "instance_id": 42})
+    mock_active.return_value = INSTANCE_RESPONSE
 
     result = runner.invoke(app, ["down"])
     assert result.exit_code == 0
     assert "destroyed" in result.output
+    mock_destroy.assert_called_once_with(42)
 
 
 @patch("openoutreach.cli.client.destroy_instance")
-def test_down_clears_certs(mock_destroy):
+@patch("openoutreach.cli.client.get_active_instance")
+def test_down_no_local_cleanup(mock_active, mock_destroy):
+    """down should NOT need to clean up local instance state."""
     from openoutreach.config import load, save
+    save({"api_token": "tok_abc"})
 
-    save({
-        "api_token": "tok_abc",
-        "instance_id": 42,
-        "droplet_ip": "1.2.3.4",
-        "server_cert": "SERVERCERT",
-        "client_cert": "CLIENTCERT",
-        "client_key": "CLIENTKEY",
-    })
+    mock_active.return_value = INSTANCE_RESPONSE
 
     runner.invoke(app, ["down"])
 
     creds = load()
-    assert creds["instance_id"] is None
-    assert creds["droplet_ip"] is None
+    assert "instance_id" not in creds
+    assert "droplet_ip" not in creds
 
 
-def test_down_no_instance():
+@patch("openoutreach.cli.client.get_active_instance", return_value=None)
+def test_down_no_instance(mock_active):
+    from openoutreach.config import save
+    save({"api_token": "tok_abc"})
+
     result = runner.invoke(app, ["down"])
     assert result.exit_code == 1
+    assert "No instance found" in result.output

@@ -145,25 +145,17 @@ def up(
         raise
 
     instance_id = data["id"]
-    config_mod.save({"instance_id": instance_id})
 
     with console.status("Waiting for instance to start…"):
         info = client.poll_instance_running(instance_id)
 
-    droplet_ip = info["droplet_ip"]
-    config_mod.save({
-        "droplet_ip": droplet_ip,
-        "server_cert": info["server_cert"],
-        "client_cert": info["client_cert"],
-        "client_key": info["client_key"],
-    })
-    console.print(f"[green]✓[/green] Instance running — region: {info['region']} ({droplet_ip})")
+    console.print(f"[green]✓[/green] Instance running — region: {info['region']} ({info['droplet_ip']})")
 
     if no_logs:
         return
 
     stream_logs(
-        droplet_ip=droplet_ip,
+        droplet_ip=info["droplet_ip"],
         server_cert=info["server_cert"],
         client_cert=info["client_cert"],
         client_key=info["client_key"],
@@ -175,18 +167,20 @@ def up(
 # ── Status / Logs / Down ───────────────────────────────────────
 
 
+def _require_active_instance() -> dict:
+    """Fetch the active instance from the hub, or exit."""
+    config_mod.require_token()
+    info = client.get_active_instance()
+    if not info:
+        err.print("[red]No instance found.[/red] Run [bold]openoutreach up[/bold] first.")
+        raise SystemExit(1)
+    return info
+
+
 @app.command()
 def status() -> None:
     """Show current instance status."""
-    creds = config_mod.load()
-    instance_id = creds.get("instance_id")
-    if not instance_id:
-        err.print("[red]No instance found.[/red] Run [bold]openoutreach up[/bold] first.")
-        raise SystemExit(1)
-
-    config_mod.require_token()
-    info = client.get_instance(instance_id)
-
+    info = _require_active_instance()
     console.print(f"Status:  [bold]{info['status']}[/bold]")
     console.print(f"Region:  {info['region']}")
     if info.get("uptime"):
@@ -196,17 +190,12 @@ def status() -> None:
 @app.command()
 def logs() -> None:
     """Stream live logs from your cloud instance (mTLS, tail -f style)."""
-    creds = config_mod.load()
-    required = ("droplet_ip", "server_cert", "client_cert", "client_key")
-    if not all(creds.get(k) for k in required):
-        err.print("[red]No instance credentials found.[/red] Run [bold]openoutreach up[/bold] first.")
-        raise SystemExit(1)
-
+    info = _require_active_instance()
     stream_logs(
-        droplet_ip=creds["droplet_ip"],
-        server_cert=creds["server_cert"],
-        client_cert=creds["client_cert"],
-        client_key=creds["client_key"],
+        droplet_ip=info["droplet_ip"],
+        server_cert=info["server_cert"],
+        client_cert=info["client_cert"],
+        client_key=info["client_key"],
         console=console,
     )
 
@@ -214,22 +203,7 @@ def logs() -> None:
 @app.command()
 def down() -> None:
     """Destroy your cloud instance."""
-    creds = config_mod.load()
-    instance_id = creds.get("instance_id")
-    if not instance_id:
-        err.print("[red]No instance found.[/red]")
-        raise SystemExit(1)
-
-    config_mod.require_token()
-
+    info = _require_active_instance()
     with console.status("Destroying instance…"):
-        client.destroy_instance(instance_id)
-
-    config_mod.save({
-        "instance_id": None,
-        "droplet_ip": None,
-        "server_cert": None,
-        "client_cert": None,
-        "client_key": None,
-    })
+        client.destroy_instance(info["id"])
     console.print("[green]✓[/green] Instance destroyed.")

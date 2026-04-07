@@ -104,6 +104,15 @@ def create_instance(config: dict) -> dict:
     return r.json()
 
 
+def get_active_instance() -> dict | None:
+    """GET /api/instances/ → active instance or None."""
+    r = httpx.get(f"{_base_url()}/api/instances/", headers=_auth_headers(), timeout=30)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return r.json()
+
+
 def get_instance(instance_id: int) -> dict:
     """GET /api/instances/{id}/ → instance data."""
     r = httpx.get(f"{_base_url()}/api/instances/{instance_id}/", headers=_auth_headers(), timeout=30)
