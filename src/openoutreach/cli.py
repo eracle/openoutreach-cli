@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import webbrowser
 from pathlib import Path
+from typing import Optional
 
 import httpx
 import typer
@@ -140,10 +141,27 @@ def _upload_to_sidecar(info: dict, db_path: Path) -> None:
 
 @app.command()
 def up(
-    db: Path = typer.Argument(..., help="Path to data directory or db.sqlite3 file."),
+    db: Optional[Path] = typer.Argument(
+        None,
+        help="Path to your OpenOutreach data/ directory or db.sqlite3 file.",
+        metavar="DB_PATH",
+        show_default=False,
+    ),
     no_logs: bool = typer.Option(False, "--no-logs", help="Skip auto-tailing logs after provisioning."),
 ) -> None:
-    """Provision and start your cloud instance."""
+    """Provision and start your cloud instance.
+
+    Examples:
+
+        openoutreach up ./data/
+
+        openoutreach up ./data/db.sqlite3
+    """
+    if db is None:
+        err.print("[red]Missing DB_PATH.[/red] Pass your data/ directory or db.sqlite3 file.\n")
+        err.print("  openoutreach up ./data/")
+        err.print("  openoutreach up ./data/db.sqlite3\n")
+        raise SystemExit(1)
     db_path = _validate_db_path(db)
     instance_config = _ensure_vpn_config()
 
