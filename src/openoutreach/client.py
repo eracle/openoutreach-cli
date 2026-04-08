@@ -19,6 +19,22 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {require_token()}"}
 
 
+def _is_transient(exc: BaseException) -> bool:
+    if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500:
+        return True
+    return False
+
+
+_retry_transient = retry(
+    retry=retry_if_exception(_is_transient),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(max=4),
+    reraise=True,
+)
+
+
 # ── Response types ────────────────────────────────────────────────
 
 
@@ -51,6 +67,7 @@ class CheckoutResult:
 # ── Auth / Checkout ───────────────────────────────────────────────
 
 
+@_retry_transient
 def create_checkout(linkedin_email: str) -> CheckoutResult:
     """POST /api/checkout/ → CheckoutResult."""
     r = httpx.post(f"{_base_url()}/api/checkout/", json={"linkedin_email": linkedin_email})
@@ -93,15 +110,7 @@ def poll_auth_status(session_id: str, *, timeout: int = 300, interval: int = 3) 
 # ── Instances ─────────────────────────────────────────────────────
 
 
-def _is_transient(exc: BaseException) -> bool:
-    if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500:
-        return True
-    return False
-
-
-@retry(retry=retry_if_exception(_is_transient), stop=stop_after_attempt(3), wait=wait_exponential(max=4), reraise=True)
+@_retry_transient
 def create_instance(config: dict) -> dict:
     """POST /api/instances/ → instance data.  Retries on transient failures."""
     r = httpx.post(
@@ -114,6 +123,7 @@ def create_instance(config: dict) -> dict:
     return r.json()
 
 
+@_retry_transient
 def get_active_instance() -> dict | None:
     """GET /api/instances/ → active instance or None."""
     r = httpx.get(f"{_base_url()}/api/instances/", headers=_auth_headers(), timeout=30)
@@ -123,6 +133,7 @@ def get_active_instance() -> dict | None:
     return r.json()
 
 
+@_retry_transient
 def get_instance(instance_id: int) -> dict:
     """GET /api/instances/{id}/ → instance data."""
     r = httpx.get(f"{_base_url()}/api/instances/{instance_id}/", headers=_auth_headers(), timeout=30)
@@ -141,6 +152,7 @@ def poll_instance_running(instance_id: int, *, timeout: int = 300, interval: int
     raise TimeoutError("Instance did not reach 'running' state in time.")
 
 
+@_retry_transient
 def destroy_instance(instance_id: int) -> None:
     """DELETE /api/instances/{id}/"""
     r = httpx.delete(f"{_base_url()}/api/instances/{instance_id}/", headers=_auth_headers())
