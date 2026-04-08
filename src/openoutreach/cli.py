@@ -125,14 +125,13 @@ def _validate_db_path(path: Path) -> Path:
 
 def _upload_to_sidecar(info: dict, db_path: Path) -> None:
     """Upload a DB file to the instance's sidecar."""
-    with console.status("Uploading database…"):
-        sidecar_upload_db(
-            droplet_ip=info["droplet_ip"],
-            server_cert=info["server_cert"],
-            client_cert=info["client_cert"],
-            client_key=info["client_key"],
-            db_path=db_path,
-        )
+    sidecar_upload_db(
+        droplet_ip=info["droplet_ip"],
+        server_cert=info["server_cert"],
+        client_cert=info["client_cert"],
+        client_key=info["client_key"],
+        db_path=db_path,
+    )
     console.print("[green]✓[/green] Database uploaded.")
 
 
