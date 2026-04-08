@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 
 import httpx
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from openoutreach.config import hub_url, require_token
 
@@ -92,8 +93,17 @@ def poll_auth_status(session_id: str, *, timeout: int = 300, interval: int = 3) 
 # ── Instances ─────────────────────────────────────────────────────
 
 
+def _is_transient(exc: BaseException) -> bool:
+    if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500:
+        return True
+    return False
+
+
+@retry(retry=retry_if_exception(_is_transient), stop=stop_after_attempt(3), wait=wait_exponential(max=4), reraise=True)
 def create_instance(config: dict) -> dict:
-    """POST /api/instances/ → instance data."""
+    """POST /api/instances/ → instance data.  Retries on transient failures."""
     r = httpx.post(
         f"{_base_url()}/api/instances/",
         headers=_auth_headers(),
