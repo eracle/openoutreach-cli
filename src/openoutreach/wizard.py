@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-import typer
 import questionary
 from prompt_toolkit.key_binding import KeyBindings
 
@@ -160,16 +159,15 @@ class Autocomplete(Question):
 
 
 class MultilineText(Question):
-    """Multi-line text input via ``$EDITOR``.
+    """Inline multiline text input (Enter for newline, Ctrl+D to submit).
 
-    Required fields open the editor directly.
+    Required fields prompt directly.
     Optional fields first ask a yes/no gate — answer "no" to skip.
     """
 
     def _prompt(self, default, **_):
         if self.required:
-            questionary.print(f"? {self.message} (opens editor)", style="bold")
-            return self._open_editor(default)
+            return self._inline_prompt(default)
         proceed = questionary.confirm(
             self.message, default=bool(default),
         ).ask()
@@ -177,19 +175,40 @@ class MultilineText(Question):
             return proceed
         if not proceed:
             return ""
-        return self._open_editor(default)
+        return self._inline_prompt(default)
 
-    def _open_editor(self, default):
-        header = f"# {self.message}\n# (Lines starting with '#' are removed)\n\n"
-        text = typer.edit(header + (default or ""))
-        if text is None:
-            return _BACK
-        lines = [l for l in text.splitlines() if not l.startswith("#")]
-        text = "\n".join(lines).strip()
-        if self.required and not text:
-            questionary.print("  This field is required.", style="fg:red")
-            return self._open_editor(default)
-        return text
+    def _inline_prompt(self, default):
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.key_binding import KeyBindings as PTKeyBindings
+
+        bindings = PTKeyBindings()
+
+        @bindings.add("c-b")
+        def _back(event):
+            event.app.exit(result=_BACK)
+
+        @bindings.add("c-d", eager=True)
+        def _submit(event):
+            event.current_buffer.validate_and_handle()
+
+        session = PromptSession(key_bindings=bindings)
+        hint = "(optional) " if not self.required else ""
+        while True:
+            try:
+                text = session.prompt(
+                    f"? {self.message} {hint}(Ctrl+D to submit):\n",
+                    default=default or "",
+                    multiline=True,
+                )
+            except (EOFError, KeyboardInterrupt):
+                return None
+            if text == _BACK:
+                return _BACK
+            text = text.strip()
+            if self.required and not text:
+                questionary.print("  This field is required.", style="fg:red")
+                continue
+            return text
 
 
 # -- Wizard runner ------------------------------------------------------------
