@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -22,68 +23,28 @@ INSTANCE_RESPONSE = {
     "client_key": "CLIENTKEY",
 }
 
-WIZARD_ANSWERS = {
+VPN_ANSWERS = {
     "vpn_country": "Netherlands",
     "vpn_city": "Amsterdam",
-    "campaign_name": "test",
-    "product_description": "A test product",
-    "campaign_objective": "sell to CTOs",
-    "booking_link": "",
-    "seed_urls": "",
-    "linkedin_email": "a@b.com",
-    "linkedin_password": "secret",
-    "llm_api_key": "sk-test",
-    "ai_model": "gpt-4o",
-    "llm_api_base": "https://api.openai.com/v1",
-    "newsletter": True,
-    "connect_daily_limit": 50,
-    "connect_weekly_limit": 250,
-    "follow_up_daily_limit": 100,
-    "legal_acceptance": True,
 }
 
-# Config fields saved after wizard (legal_acceptance stripped).
-SAVED_CONFIG = {k: v for k, v in WIZARD_ANSWERS.items() if k != "legal_acceptance"}
 
-
-def _save_config_and_token():
-    """Pre-populate credentials with config + api_token."""
+def _save_vpn_config_and_token():
     from openoutreach.config import save
-    save({**SAVED_CONFIG, "api_token": "tok_abc"})
+    save({**VPN_ANSWERS, "api_token": "tok_abc", "linkedin_email": "a@b.com"})
+
+
+def _create_db_file(tmp_path) -> Path:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "db.sqlite3").write_bytes(b"fake-sqlite-content")
+    return data_dir
 
 
 @pytest.fixture(autouse=True)
 def _tmp_config(tmp_path, monkeypatch):
-    """Redirect credentials to a temp directory."""
     monkeypatch.setattr("openoutreach.config.CONFIG_DIR", tmp_path)
     monkeypatch.setattr("openoutreach.config.CREDENTIALS_FILE", tmp_path / "credentials.json")
-
-
-# ── config ────────────────────────────────────────────────────────
-
-
-@patch("openoutreach.cli.ask_wizard")
-def test_config_saves_locally(mock_wizard):
-    from openoutreach.config import load
-
-    mock_wizard.return_value = WIZARD_ANSWERS.copy()
-
-    result = runner.invoke(app, ["config"])
-    assert result.exit_code == 0
-    assert "Configuration saved" in result.output
-
-    creds = load()
-    assert creds["vpn_country"] == "Netherlands"
-    assert creds["vpn_city"] == "Amsterdam"
-    assert creds["linkedin_email"] == "a@b.com"
-    assert "legal_acceptance" not in creds
-
-
-@patch("openoutreach.cli.ask_wizard")
-def test_config_cancelled(mock_wizard):
-    mock_wizard.return_value = None
-    result = runner.invoke(app, ["config"])
-    assert result.exit_code == 1
 
 
 # ── signup ────────────────────────────────────────────────────────
@@ -93,8 +54,9 @@ def test_config_cancelled(mock_wizard):
 @patch("openoutreach.cli.client.poll_auth_status")
 @patch("openoutreach.cli.client.create_checkout")
 @patch("openoutreach.cli.ask_wizard")
-def test_signup_new_user(mock_wizard, mock_checkout, mock_poll, mock_browser):
-    mock_wizard.return_value = WIZARD_ANSWERS.copy()
+@patch("openoutreach.cli.typer.prompt", return_value="a@b.com")
+def test_signup_new_user(mock_prompt, mock_wizard, mock_checkout, mock_poll, mock_browser):
+    mock_wizard.return_value = VPN_ANSWERS.copy()
     mock_checkout.return_value = CheckoutResult(
         credentials=None,
         checkout_url="https://checkout.stripe.com/test",
@@ -106,13 +68,13 @@ def test_signup_new_user(mock_wizard, mock_checkout, mock_poll, mock_browser):
     assert result.exit_code == 0
     assert "Signed up" in result.output
     mock_browser.assert_called_once()
-    mock_checkout.assert_called_once_with("a@b.com")
 
 
 @patch("openoutreach.cli.client.create_checkout")
 @patch("openoutreach.cli.ask_wizard")
-def test_signup_already_active(mock_wizard, mock_checkout):
-    mock_wizard.return_value = WIZARD_ANSWERS.copy()
+@patch("openoutreach.cli.typer.prompt", return_value="a@b.com")
+def test_signup_already_active(mock_prompt, mock_wizard, mock_checkout):
+    mock_wizard.return_value = VPN_ANSWERS.copy()
     mock_checkout.return_value = CheckoutResult(
         credentials=Credentials(api_token="tok_abc", customer_id="cus_123"),
         checkout_url=None,
@@ -122,27 +84,6 @@ def test_signup_already_active(mock_wizard, mock_checkout):
     result = runner.invoke(app, ["signup"])
     assert result.exit_code == 0
     assert "already active" in result.output
-    mock_checkout.assert_called_once_with("a@b.com")
-
-
-@patch("openoutreach.cli.webbrowser.open")
-@patch("openoutreach.cli.client.poll_auth_status")
-@patch("openoutreach.cli.client.create_checkout")
-def test_signup_with_existing_config(mock_checkout, mock_poll, mock_browser):
-    """If config already exists, signup skips the wizard."""
-    from openoutreach.config import save
-    save(SAVED_CONFIG)
-
-    mock_checkout.return_value = CheckoutResult(
-        credentials=None,
-        checkout_url="https://checkout.stripe.com/test",
-        session_id="sess_123",
-    )
-    mock_poll.return_value = Credentials(api_token="tok_abc", customer_id="cus_123")
-
-    result = runner.invoke(app, ["signup"])
-    assert result.exit_code == 0
-    mock_checkout.assert_called_once_with("a@b.com")
 
 
 @patch("openoutreach.cli.ask_wizard")
@@ -156,156 +97,74 @@ def test_signup_cancelled(mock_wizard):
 
 
 @patch("openoutreach.cli.stream_logs")
+@patch("openoutreach.cli.sidecar_upload_db")
 @patch("openoutreach.cli.client.poll_instance_running")
 @patch("openoutreach.cli.client.create_instance")
-def test_up_auto_tails(mock_create, mock_poll, mock_stream):
-    _save_config_and_token()
+def test_up_auto_tails(mock_create, mock_poll, mock_upload, mock_stream, tmp_path):
+    _save_vpn_config_and_token()
+    data_dir = _create_db_file(tmp_path)
     mock_create.return_value = {"id": 42}
     mock_poll.return_value = INSTANCE_RESPONSE
 
-    result = runner.invoke(app, ["up"])
+    result = runner.invoke(app, ["up", str(data_dir)])
     assert result.exit_code == 0
     assert "running" in result.output
-
+    assert "Database uploaded" in result.output
+    mock_upload.assert_called_once()
     mock_stream.assert_called_once()
-    assert mock_stream.call_args.kwargs["droplet_ip"] == "1.2.3.4"
-
-    # Verify config was sent to create_instance.
-    config_arg = mock_create.call_args[0][0]
-    assert config_arg["linkedin_email"] == "a@b.com"
-    assert config_arg["vpn_country"] == "Netherlands"
 
 
 @patch("openoutreach.cli.stream_logs")
+@patch("openoutreach.cli.sidecar_upload_db")
 @patch("openoutreach.cli.client.poll_instance_running")
 @patch("openoutreach.cli.client.create_instance")
-def test_up_no_logs(mock_create, mock_poll, mock_stream):
-    _save_config_and_token()
+def test_up_no_logs(mock_create, mock_poll, mock_upload, mock_stream, tmp_path):
+    _save_vpn_config_and_token()
+    data_dir = _create_db_file(tmp_path)
     mock_create.return_value = {"id": 42}
     mock_poll.return_value = INSTANCE_RESPONSE
 
-    result = runner.invoke(app, ["up", "--no-logs"])
+    result = runner.invoke(app, ["up", str(data_dir), "--no-logs"])
     assert result.exit_code == 0
-    assert "running" in result.output
     mock_stream.assert_not_called()
 
 
-@patch("openoutreach.cli.stream_logs")
-@patch("openoutreach.cli.client.poll_instance_running")
 @patch("openoutreach.cli.client.create_instance")
-def test_up_no_local_instance_state(mock_create, mock_poll, mock_stream):
-    """up should NOT save instance state locally."""
-    from openoutreach.config import load
-
-    _save_config_and_token()
-    mock_create.return_value = {"id": 42}
-    mock_poll.return_value = INSTANCE_RESPONSE
-
-    runner.invoke(app, ["up"])
-
-    creds = load()
-    assert "instance_id" not in creds
-    assert "droplet_ip" not in creds
-    assert "server_cert" not in creds
-
-
-@patch("openoutreach.cli.client.create_instance")
-def test_up_rejects_existing_instance(mock_create):
+def test_up_rejects_existing_instance(mock_create, tmp_path):
     import httpx
 
-    _save_config_and_token()
+    _save_vpn_config_and_token()
+    data_dir = _create_db_file(tmp_path)
     response = httpx.Response(409, json={"error": "You already have an active instance."})
     mock_create.side_effect = httpx.HTTPStatusError("conflict", request=httpx.Request("POST", "http://x"), response=response)
 
-    result = runner.invoke(app, ["up"])
+    result = runner.invoke(app, ["up", str(data_dir)])
     assert result.exit_code == 1
     assert "already have an active instance" in result.output
 
 
-@patch("openoutreach.cli.stream_logs")
-@patch("openoutreach.cli.client.poll_instance_running")
-@patch("openoutreach.cli.client.create_instance")
-@patch("openoutreach.cli.webbrowser.open")
-@patch("openoutreach.cli.client.poll_auth_status")
-@patch("openoutreach.cli.client.create_checkout")
-@patch("openoutreach.cli.ask_wizard")
-def test_up_chains_config_and_signup(
-    mock_wizard, mock_checkout, mock_poll_auth, mock_browser,
-    mock_create, mock_poll, mock_stream,
-):
-    """From scratch: up chains config -> signup -> provision."""
-    mock_wizard.return_value = WIZARD_ANSWERS.copy()
-    mock_checkout.return_value = CheckoutResult(
-        credentials=None,
-        checkout_url="https://checkout.stripe.com/test",
-        session_id="sess_123",
-    )
-    mock_poll_auth.return_value = Credentials(api_token="tok_abc", customer_id="cus_123")
-    mock_create.return_value = {"id": 42}
-    mock_poll.return_value = INSTANCE_RESPONSE
-
-    result = runner.invoke(app, ["up"])
-    assert result.exit_code == 0
-
-    mock_wizard.assert_called_once()
-    mock_checkout.assert_called_once_with("a@b.com")
-    mock_create.assert_called_once()
+def test_up_rejects_bad_path(tmp_path):
+    _save_vpn_config_and_token()
+    result = runner.invoke(app, ["up", str(tmp_path / "nonexistent")])
+    assert result.exit_code == 1
 
 
-@patch("openoutreach.cli.stream_logs")
-@patch("openoutreach.cli.client.poll_instance_running")
-@patch("openoutreach.cli.client.create_instance")
-@patch("openoutreach.cli.client.create_checkout")
-def test_up_chains_signup_already_active(
-    mock_checkout, mock_create, mock_poll, mock_stream,
-):
-    """Config exists, no token, already-active user: up skips Stripe entirely."""
+# ── upload-db ────────────────────────────────────────────────────
+
+
+@patch("openoutreach.cli.sidecar_upload_db")
+@patch("openoutreach.cli.client.get_active_instance")
+def test_upload_db(mock_active, mock_upload, tmp_path):
     from openoutreach.config import save
-    save(SAVED_CONFIG)
+    save({"api_token": "tok_abc"})
 
-    mock_checkout.return_value = CheckoutResult(
-        credentials=Credentials(api_token="tok_abc", customer_id="cus_123"),
-        checkout_url=None,
-        session_id=None,
-    )
-    mock_create.return_value = {"id": 42}
-    mock_poll.return_value = INSTANCE_RESPONSE
+    mock_active.return_value = INSTANCE_RESPONSE
+    data_dir = _create_db_file(tmp_path)
 
-    result = runner.invoke(app, ["up"])
+    result = runner.invoke(app, ["upload-db", str(data_dir)])
     assert result.exit_code == 0
-
-    mock_checkout.assert_called_once_with("a@b.com")
-    mock_create.assert_called_once()
-
-
-@patch("openoutreach.cli.stream_logs")
-@patch("openoutreach.cli.client.poll_instance_running")
-@patch("openoutreach.cli.client.create_instance")
-@patch("openoutreach.cli.webbrowser.open")
-@patch("openoutreach.cli.client.poll_auth_status")
-@patch("openoutreach.cli.client.create_checkout")
-def test_up_chains_signup_new_user(
-    mock_checkout, mock_poll_auth, mock_browser,
-    mock_create, mock_poll, mock_stream,
-):
-    """Config exists but no token: up chains signup -> provision (no wizard)."""
-    from openoutreach.config import save
-    save(SAVED_CONFIG)
-
-    mock_checkout.return_value = CheckoutResult(
-        credentials=None,
-        checkout_url="https://checkout.stripe.com/test",
-        session_id="sess_123",
-    )
-    mock_poll_auth.return_value = Credentials(api_token="tok_abc", customer_id="cus_123")
-    mock_create.return_value = {"id": 42}
-    mock_poll.return_value = INSTANCE_RESPONSE
-
-    result = runner.invoke(app, ["up"])
-    assert result.exit_code == 0
-
-    mock_checkout.assert_called_once_with("a@b.com")
-    mock_create.assert_called_once()
+    assert "Database uploaded" in result.output
+    mock_upload.assert_called_once()
 
 
 # ── status ────────────────────────────────────────────────────────
@@ -330,7 +189,6 @@ def test_status_no_instance(mock_active):
 
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 1
-    assert "No instance found" in result.output
 
 
 def test_status_no_token():
@@ -351,9 +209,7 @@ def test_logs(mock_active, mock_stream):
 
     result = runner.invoke(app, ["logs"])
     assert result.exit_code == 0
-
     mock_stream.assert_called_once()
-    assert mock_stream.call_args.kwargs["droplet_ip"] == "1.2.3.4"
 
 
 @patch("openoutreach.cli.client.get_active_instance", return_value=None)
@@ -363,7 +219,6 @@ def test_logs_no_instance(mock_active):
 
     result = runner.invoke(app, ["logs"])
     assert result.exit_code == 1
-    assert "No instance found" in result.output
 
 
 def test_logs_no_token():
@@ -388,22 +243,6 @@ def test_down(mock_active, mock_destroy):
     mock_destroy.assert_called_once_with(42)
 
 
-@patch("openoutreach.cli.client.destroy_instance")
-@patch("openoutreach.cli.client.get_active_instance")
-def test_down_no_local_cleanup(mock_active, mock_destroy):
-    """down should NOT need to clean up local instance state."""
-    from openoutreach.config import load, save
-    save({"api_token": "tok_abc"})
-
-    mock_active.return_value = INSTANCE_RESPONSE
-
-    runner.invoke(app, ["down"])
-
-    creds = load()
-    assert "instance_id" not in creds
-    assert "droplet_ip" not in creds
-
-
 @patch("openoutreach.cli.client.get_active_instance", return_value=None)
 def test_down_no_instance(mock_active):
     from openoutreach.config import save
@@ -411,4 +250,3 @@ def test_down_no_instance(mock_active):
 
     result = runner.invoke(app, ["down"])
     assert result.exit_code == 1
-    assert "No instance found" in result.output

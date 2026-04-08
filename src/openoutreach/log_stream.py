@@ -1,31 +1,27 @@
-"""Direct mTLS log streaming from the user's droplet."""
+"""Direct mTLS log streaming from the user's droplet sidecar."""
 
 from __future__ import annotations
 
-import contextlib
-import socket
 import ssl
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
+import httpx
 from rich.console import Console
 
-# ── Constants ─────────────────────────────────────────────────────
-
-LOG_PORT = 2376
+SIDECAR_PORT = 2376
 BACKOFF_CAP_S = 10.0
-IDLE_TIMEOUT_S = 60.0
 MAX_WAIT_S = 60.0
-MAX_RECONNECT_ATTEMPTS = 10
 
 
-# ── TLS helpers ───────────────────────────────────────────────────
+@contextmanager
+def _mtls_context(server_cert: str, client_cert: str, client_key: str):
+    """Yield an ``ssl.SSLContext`` configured for mTLS from PEM strings.
 
-
-@contextlib.contextmanager
-def _tls_context(server_cert: str, client_cert: str, client_key: str):
-    """Yield an mTLS ``ssl.SSLContext`` built from PEM strings."""
+    Writes certs to owner-only temp files (httpx needs paths), cleans up on exit.
+    """
     pems = [
         ("client-cert", client_cert),
         ("client-key", client_key),
@@ -44,9 +40,8 @@ def _tls_context(server_cert: str, client_cert: str, client_key: str):
             paths.append(path)
 
         cert_path, key_path, ca_path = paths
-
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False  # self-signed, CN won't match IP
+        ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_REQUIRED
         ctx.load_cert_chain(str(cert_path), str(key_path))
         ctx.load_verify_locations(str(ca_path))
@@ -56,69 +51,22 @@ def _tls_context(server_cert: str, client_cert: str, client_key: str):
             p.unlink(missing_ok=True)
 
 
-def _open_connection(ip: str, port: int, ctx: ssl.SSLContext) -> ssl.SSLSocket:
-    raw = socket.create_connection((ip, port), timeout=10)
-    return ctx.wrap_socket(raw, server_hostname="logs")
+def _sidecar_url(ip: str, path: str) -> str:
+    return f"https://{ip}:{SIDECAR_PORT}{path}"
 
 
-# ── Connection with backoff ──────────────────────────────────────
-
-
-def _connect(
-    ip: str,
-    port: int,
-    ctx: ssl.SSLContext,
-    console: Console,
-    *,
-    max_attempts: int | None = None,
-    deadline: float | None = None,
-    label: str = "Waiting for log stream...",
-) -> ssl.SSLSocket:
-    """Retry connecting with exponential backoff.
-
-    Stops when *max_attempts* is exhausted or *deadline* is passed.
-    """
-    if max_attempts is None and deadline is None:
-        raise ValueError("max_attempts or deadline required")
+def _retry(fn, *, max_wait=MAX_WAIT_S, errors=(httpx.ConnectError, httpx.RemoteProtocolError)):
+    """Call *fn* repeatedly with exponential backoff until it succeeds or *max_wait* expires."""
+    deadline = time.monotonic() + max_wait
     delay = 1.0
-    attempt = 0
-    with console.status(label) as spinner:
-        while True:
-            try:
-                return _open_connection(ip, port, ctx)
-            except (OSError, ssl.SSLError):
-                attempt += 1
-                if max_attempts is not None and attempt >= max_attempts:
-                    break
-                if deadline is not None and time.monotonic() + delay > deadline:
-                    break
-                spinner.update(f"{label} retry in {delay:.0f}s")
-                time.sleep(delay)
-                delay = min(delay * 2, BACKOFF_CAP_S)
-
-    console.print(f"[red]Could not connect to {ip}:{port}[/red]")
-    raise SystemExit(1)
-
-
-# ── Read loop ────────────────────────────────────────────────────
-
-
-def _read_loop(sock: ssl.SSLSocket, console: Console) -> None:
-    """Print data from *sock* until the connection drops."""
-    sock.settimeout(IDLE_TIMEOUT_S)
     while True:
         try:
-            data = sock.recv(4096)
-        except socket.timeout:
-            console.print("[dim]-- idle --[/dim]", highlight=False)
-            continue
-
-        if not data:
-            raise ConnectionError("stream ended")
-        console.print(data.decode(errors="replace"), end="", highlight=False)
-
-
-# ── Public API ───────────────────────────────────────────────────
+            return fn()
+        except errors:
+            if time.monotonic() + delay > deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, BACKOFF_CAP_S)
 
 
 def stream_logs(
@@ -130,43 +78,58 @@ def stream_logs(
     console: Console | None = None,
     max_wait: float = MAX_WAIT_S,
 ) -> None:
-    """Stream logs from the droplet's mTLS sidecar until Ctrl-C.
-
-    Args:
-        droplet_ip: Droplet public IP address.
-        server_cert: PEM server certificate (for pinning).
-        client_cert: PEM client certificate.
-        client_key: PEM client private key.
-        console: Rich console for output (default: new Console).
-        max_wait: Max seconds to wait for the sidecar (default: 60).
-    """
+    """Stream logs from the droplet's mTLS sidecar until Ctrl-C."""
     if console is None:
         console = Console()
 
-    with _tls_context(server_cert, client_cert, client_key) as ctx:
-        deadline = time.monotonic() + max_wait
-        sock = _connect(droplet_ip, LOG_PORT, ctx, console, deadline=deadline)
-        console.print("[green]Connected.[/green]")
+    with _mtls_context(server_cert, client_cert, client_key) as ctx:
 
-        try:
-            while True:
+        def _connect():
+            with httpx.stream(
+                "GET",
+                _sidecar_url(droplet_ip, "/logs"),
+                verify=ctx,
+                timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
+            ) as resp:
+                resp.raise_for_status()
+                console.print("[green]Connected.[/green]")
                 try:
-                    _read_loop(sock, console)
-                except ConnectionError:
-                    # Clean close — server shut down the stream.
-                    sock.close()
-                    console.print("\n[yellow]Instance stopped.[/yellow]")
+                    for chunk in resp.iter_text():
+                        console.print(chunk, end="", highlight=False)
+                except KeyboardInterrupt:
+                    console.print("\n[dim]Log stream detached (instance still running).[/dim]")
                     return
-                except (OSError, ssl.SSLError):
-                    sock.close()
-                    console.print("[yellow][reconnecting...][/yellow]")
-                    sock = _connect(
-                        droplet_ip, LOG_PORT, ctx, console,
-                        max_attempts=MAX_RECONNECT_ATTEMPTS,
-                        label="Reconnecting...",
-                    )
-                    console.print("[green][reconnected][/green]")
-        except KeyboardInterrupt:
-            console.print("\n[dim]Log stream detached (instance still running).[/dim]")
-        finally:
-            sock.close()
+
+            console.print("\n[yellow]Instance stopped.[/yellow]")
+
+        _retry(
+            _connect,
+            max_wait=max_wait,
+            errors=(httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, httpx.HTTPStatusError),
+        )
+
+
+def upload_db(
+    droplet_ip: str,
+    server_cert: str,
+    client_cert: str,
+    client_key: str,
+    db_path: Path,
+    *,
+    max_wait: float = MAX_WAIT_S,
+) -> None:
+    """Upload db.sqlite3 directly to the sidecar via mTLS POST."""
+    with _mtls_context(server_cert, client_cert, client_key) as ctx:
+
+        def _post():
+            with db_path.open("rb") as f:
+                resp = httpx.post(
+                    _sidecar_url(droplet_ip, "/db-upload"),
+                    content=f,
+                    headers={"Content-Length": str(db_path.stat().st_size)},
+                    verify=ctx,
+                    timeout=120,
+                )
+            resp.raise_for_status()
+
+        _retry(_post, max_wait=max_wait)

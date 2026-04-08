@@ -55,38 +55,16 @@ def require_token() -> str:
     return token
 
 
-# Keys sent to POST /api/instances/ when provisioning.
-INSTANCE_CONFIG_REQUIRED = [
-    "campaign_name",
-    "product_description",
-    "campaign_objective",
-    "linkedin_email",
-    "linkedin_password",
-    "llm_api_key",
-    "ai_model",
-]
-
-INSTANCE_CONFIG_OPTIONAL = [
-    "vpn_country",
-    "vpn_city",
-    "booking_link",
-    "seed_urls",
-    "llm_api_base",
-    "newsletter",
-    "connect_daily_limit",
-    "connect_weekly_limit",
-    "follow_up_daily_limit",
-]
-
-INSTANCE_CONFIG_KEYS = INSTANCE_CONFIG_REQUIRED + INSTANCE_CONFIG_OPTIONAL
+# Keys sent to POST /api/instances/ when provisioning (VPN only).
+INSTANCE_CONFIG_KEYS = ["vpn_country", "vpn_city"]
 
 
 def get_instance_config() -> dict | None:
-    """Extract provisioning config from credentials.
+    """Extract VPN provisioning config from credentials.
 
-    Returns the config dict if all required keys are present, else None.
+    Returns the config dict if at least vpn_country is set, else None.
     """
     creds = load()
-    if not all(creds.get(k) for k in INSTANCE_CONFIG_REQUIRED):
+    if not creds.get("vpn_country"):
         return None
     return {k: creds[k] for k in INSTANCE_CONFIG_KEYS if k in creds}
