@@ -9,6 +9,7 @@ from typing import Optional
 import httpx
 import typer
 from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from openoutreach import __version__, client
 from openoutreach import config as config_mod
@@ -180,8 +181,19 @@ def up(
 
     instance_id = data["id"]
 
-    with console.status("Waiting for instance to start…"):
-        info = client.poll_instance_running(instance_id)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Provisioning instance…", total=None)
+
+        def _on_tick(status: str) -> None:
+            progress.update(task, description=f"Instance {status}…")
+
+        info = client.poll_instance_running(instance_id, on_tick=_on_tick)
 
     console.print(f"[green]✓[/green] Instance running — region: {info['region']} ({info['droplet_ip']})")
 
