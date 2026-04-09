@@ -189,6 +189,10 @@ def up(
 
     instance_id = data["id"]
 
+    estimated_seconds = 60
+    poll_interval = 5
+    estimated_ticks = estimated_seconds // poll_interval
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -196,12 +200,13 @@ def up(
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Provisioning instance…", total=None)
+        task = progress.add_task("Provisioning instance…", total=estimated_ticks)
 
         def _on_tick(status: str) -> None:
-            progress.update(task, description=f"Instance {status}…")
+            progress.update(task, advance=1, description=f"Instance {status}…")
 
         info = client.poll_instance_running(instance_id, on_tick=_on_tick)
+        progress.update(task, completed=estimated_ticks)
 
     console.print(f"[green]✓[/green] Instance running — region: {info['region']} ({info['droplet_ip']})")
 
