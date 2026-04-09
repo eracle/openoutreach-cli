@@ -107,7 +107,7 @@ def stream_logs(
                     console.print("\n[dim]Log stream detached (instance still running).[/dim]")
                     return
 
-            console.print("\n[yellow]Instance stopped.[/yellow]")
+            console.print("\n[yellow]Log stream ended.[/yellow]")
 
         _retry(
             _connect,
