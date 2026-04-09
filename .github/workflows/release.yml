@@ -12,20 +12,39 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-22.04
+          - os: ubuntu-latest
             artifact: openoutreach-linux-amd64
+            container: true
           - os: macos-latest
             artifact: openoutreach-macos-amd64
+            container: false
           - os: windows-latest
             artifact: openoutreach-windows-amd64.exe
+            container: false
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      # Linux: build static binary via Alpine/musl in Docker
+      - name: Build (Linux, static)
+        if: matrix.container
+        run: |
+          docker run --rm -v "$PWD":/src -w /src python:3.12-alpine sh -c '
+            apk add --no-cache binutils
+            pip install pyinstaller .
+            pyinstaller --onefile --name ${{ matrix.artifact }} src/openoutreach/cli.py
+          '
+      # macOS / Windows: build natively
       - uses: actions/setup-python@v5
+        if: ${{ !matrix.container }}
         with:
           python-version: "3.12"
-      - run: pip install pyinstaller .
-      - run: pyinstaller --onefile --name ${{ matrix.artifact }} src/openoutreach/cli.py
+      - name: Build (native)
+        if: ${{ !matrix.container }}
+        run: |
+          pip install pyinstaller .
+          pyinstaller --onefile --name ${{ matrix.artifact }} src/openoutreach/cli.py
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
