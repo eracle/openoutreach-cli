@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
@@ -141,13 +142,25 @@ def get_instance(instance_id: int) -> dict:
     return r.json()
 
 
-def poll_instance_running(instance_id: int, *, timeout: int = 300, interval: int = 5) -> dict:
-    """Poll until instance status == 'running'."""
+def poll_instance_running(
+    instance_id: int,
+    *,
+    timeout: int = 300,
+    interval: int = 5,
+    on_tick: Callable[[str], None] | None = None,
+) -> dict:
+    """Poll until instance status == 'running'.
+
+    *on_tick* is called after each poll with the current status string.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         data = get_instance(instance_id)
-        if data.get("status") == "running":
+        status = data.get("status", "unknown")
+        if status == "running":
             return data
+        if on_tick:
+            on_tick(status)
         time.sleep(interval)
     raise TimeoutError("Instance did not reach 'running' state in time.")
 

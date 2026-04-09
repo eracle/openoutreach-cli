@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import webbrowser
 from pathlib import Path
+from typing import Optional
 
 import httpx
 import typer
 from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from openoutreach import __version__, client
 from openoutreach import config as config_mod
@@ -124,14 +126,13 @@ def _validate_db_path(path: Path) -> Path:
 
 def _upload_to_sidecar(info: dict, db_path: Path) -> None:
     """Upload a DB file to the instance's sidecar."""
-    with console.status("Uploading database…"):
-        sidecar_upload_db(
-            droplet_ip=info["droplet_ip"],
-            server_cert=info["server_cert"],
-            client_cert=info["client_cert"],
-            client_key=info["client_key"],
-            db_path=db_path,
-        )
+    sidecar_upload_db(
+        droplet_ip=info["droplet_ip"],
+        server_cert=info["server_cert"],
+        client_cert=info["client_cert"],
+        client_key=info["client_key"],
+        db_path=db_path,
+    )
     console.print("[green]✓[/green] Database uploaded.")
 
 
@@ -140,10 +141,27 @@ def _upload_to_sidecar(info: dict, db_path: Path) -> None:
 
 @app.command()
 def up(
-    db: Path = typer.Argument(..., help="Path to data directory or db.sqlite3 file."),
+    db: Optional[Path] = typer.Argument(
+        None,
+        help="Path to your OpenOutreach data/ directory or db.sqlite3 file.",
+        metavar="DB_PATH",
+        show_default=False,
+    ),
     no_logs: bool = typer.Option(False, "--no-logs", help="Skip auto-tailing logs after provisioning."),
 ) -> None:
-    """Provision and start your cloud instance."""
+    """Provision and start your cloud instance.
+
+    Examples:
+
+        openoutreach up ./data/
+
+        openoutreach up ./data/db.sqlite3
+    """
+    if db is None:
+        err.print("[red]Missing DB_PATH.[/red] Pass your data/ directory or db.sqlite3 file.\n")
+        err.print("  openoutreach up ./data/")
+        err.print("  openoutreach up ./data/db.sqlite3\n")
+        raise SystemExit(1)
     db_path = _validate_db_path(db)
     instance_config = _ensure_vpn_config()
 
@@ -163,8 +181,19 @@ def up(
 
     instance_id = data["id"]
 
-    with console.status("Waiting for instance to start…"):
-        info = client.poll_instance_running(instance_id)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Provisioning instance…", total=None)
+
+        def _on_tick(status: str) -> None:
+            progress.update(task, description=f"Instance {status}…")
+
+        info = client.poll_instance_running(instance_id, on_tick=_on_tick)
 
     console.print(f"[green]✓[/green] Instance running — region: {info['region']} ({info['droplet_ip']})")
 

@@ -10,6 +10,13 @@ from pathlib import Path
 
 import httpx
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
 
 SIDECAR_PORT = 2376
 BACKOFF_CAP_S = 10.0
@@ -100,7 +107,7 @@ def stream_logs(
                     console.print("\n[dim]Log stream detached (instance still running).[/dim]")
                     return
 
-            console.print("\n[yellow]Instance stopped.[/yellow]")
+            console.print("\n[yellow]Log stream ended.[/yellow]")
 
         _retry(
             _connect,
@@ -122,14 +129,26 @@ def upload_db(
     with _mtls_context(server_cert, client_cert, client_key) as ctx:
 
         def _post():
-            with db_path.open("rb") as f:
-                resp = httpx.post(
-                    _sidecar_url(droplet_ip, "/db-upload"),
-                    content=f,
-                    headers={"Content-Length": str(db_path.stat().st_size)},
-                    verify=ctx,
-                    timeout=120,
-                )
+            total = db_path.stat().st_size
+            resp = httpx.post(
+                _sidecar_url(droplet_ip, "/db-upload"),
+                content=_progress_reader(db_path, total),
+                headers={"Content-Length": str(total)},
+                verify=ctx,
+                timeout=120,
+            )
             resp.raise_for_status()
 
         _retry(_post, max_wait=max_wait)
+
+
+def _progress_reader(path: Path, total: int, chunk_size: int = 65536):
+    """Yield file chunks while rendering a Rich progress bar."""
+    with Progress(
+        BarColumn(), DownloadColumn(), TransferSpeedColumn(), TimeRemainingColumn(),
+    ) as progress:
+        task = progress.add_task("Uploading", total=total)
+        with path.open("rb") as f:
+            while chunk := f.read(chunk_size):
+                yield chunk
+                progress.update(task, advance=len(chunk))
