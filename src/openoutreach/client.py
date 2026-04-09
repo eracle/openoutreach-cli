@@ -12,12 +12,34 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from openoutreach.config import hub_url, require_token
 
 
+class AuthExpiredError(Exception):
+    """Raised when the hub rejects our API token (HTTP 403).
+
+    This typically means the token was regenerated on another device.
+    """
+
+
 def _base_url() -> str:
     return hub_url().rstrip("/")
 
 
-def _auth_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {require_token()}"}
+def _authed_request(method: str, path: str, **kwargs) -> httpx.Response:
+    """Send an authenticated request to the hub API.
+
+    Injects the Bearer token and raises ``AuthExpiredError`` on 403.
+    All other HTTP errors propagate as ``httpx.HTTPStatusError``.
+    """
+    kwargs.setdefault("timeout", 30)
+    r = httpx.request(
+        method,
+        f"{_base_url()}{path}",
+        headers={"Authorization": f"Bearer {require_token()}"},
+        **kwargs,
+    )
+    if r.status_code == 403:
+        raise AuthExpiredError(r.text)
+    r.raise_for_status()
+    return r
 
 
 def _is_transient(exc: BaseException) -> bool:
@@ -114,32 +136,24 @@ def poll_auth_status(session_id: str, *, timeout: int = 300, interval: int = 3) 
 @_retry_transient
 def create_instance(config: dict) -> dict:
     """POST /api/instances/ → instance data.  Retries on transient failures."""
-    r = httpx.post(
-        f"{_base_url()}/api/instances/",
-        headers=_auth_headers(),
-        json=config,
-        timeout=60,
-    )
-    r.raise_for_status()
-    return r.json()
+    return _authed_request("POST", "/api/instances/", json=config, timeout=60).json()
 
 
 @_retry_transient
 def get_active_instance() -> dict | None:
     """GET /api/instances/ → active instance or None."""
-    r = httpx.get(f"{_base_url()}/api/instances/", headers=_auth_headers(), timeout=30)
-    if r.status_code == 404:
-        return None
-    r.raise_for_status()
-    return r.json()
+    try:
+        return _authed_request("GET", "/api/instances/").json()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return None
+        raise
 
 
 @_retry_transient
 def get_instance(instance_id: int) -> dict:
     """GET /api/instances/{id}/ → instance data."""
-    r = httpx.get(f"{_base_url()}/api/instances/{instance_id}/", headers=_auth_headers(), timeout=30)
-    r.raise_for_status()
-    return r.json()
+    return _authed_request("GET", f"/api/instances/{instance_id}/").json()
 
 
 def poll_instance_running(
@@ -168,5 +182,4 @@ def poll_instance_running(
 @_retry_transient
 def destroy_instance(instance_id: int) -> None:
     """DELETE /api/instances/{id}/"""
-    r = httpx.delete(f"{_base_url()}/api/instances/{instance_id}/", headers=_auth_headers())
-    r.raise_for_status()
+    _authed_request("DELETE", f"/api/instances/{instance_id}/")

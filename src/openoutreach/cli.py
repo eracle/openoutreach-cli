@@ -13,10 +13,15 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 
 from openoutreach import __version__, client
 from openoutreach import config as config_mod
-from openoutreach.client import Credentials
+from openoutreach.client import AuthExpiredError, Credentials
 from openoutreach.log_stream import stream_logs, upload_db as sidecar_upload_db
 from openoutreach.prompts import PREMIUM_QUESTIONS
 from openoutreach.wizard import ask as ask_wizard
+
+_REAUTH_MSG = (
+    "[red]Session expired.[/red] Your API token was regenerated on another device.\n"
+    "Run [bold]openoutreach signup[/bold] to re-authenticate."
+)
 
 
 def _version_callback(value: bool) -> None:
@@ -173,6 +178,9 @@ def up(
     try:
         with console.status("Creating instance…"):
             data = client.create_instance(instance_config)
+    except AuthExpiredError:
+        err.print(_REAUTH_MSG)
+        raise SystemExit(1)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 409:
             err.print("[red]You already have an active instance.[/red] Run [bold]openoutreach down[/bold] first.")
@@ -231,7 +239,11 @@ def upload_db_cmd(
 def _require_active_instance() -> dict:
     """Fetch the active instance from the hub, or exit."""
     config_mod.require_token()
-    info = client.get_active_instance()
+    try:
+        info = client.get_active_instance()
+    except AuthExpiredError:
+        err.print(_REAUTH_MSG)
+        raise SystemExit(1)
     if not info:
         err.print("[red]No instance found.[/red] Run [bold]openoutreach up[/bold] first.")
         raise SystemExit(1)
@@ -265,6 +277,10 @@ def logs() -> None:
 def down() -> None:
     """Destroy your cloud instance."""
     info = _require_active_instance()
-    with console.status("Destroying instance…"):
-        client.destroy_instance(info["id"])
+    try:
+        with console.status("Destroying instance…"):
+            client.destroy_instance(info["id"])
+    except AuthExpiredError:
+        err.print(_REAUTH_MSG)
+        raise SystemExit(1)
     console.print("[green]✓[/green] Instance destroyed.")
