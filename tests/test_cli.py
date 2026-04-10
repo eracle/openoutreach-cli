@@ -229,18 +229,85 @@ def test_logs_no_token():
 # ── down ──────────────────────────────────────────────────────────
 
 
+@patch("openoutreach.cli.sidecar_download_db")
 @patch("openoutreach.cli.client.destroy_instance")
 @patch("openoutreach.cli.client.get_active_instance")
-def test_down(mock_active, mock_destroy):
+def test_down_downloads_then_destroys(mock_active, mock_destroy, mock_download, tmp_path):
+    from openoutreach.config import save
+    save({"api_token": "tok_abc"})
+
+    mock_active.return_value = INSTANCE_RESPONSE
+    backup = tmp_path / "backup.sqlite3"
+
+    result = runner.invoke(app, ["down", "--backup-path", str(backup)])
+    assert result.exit_code == 0
+    assert "Database saved to" in result.output
+    assert "destroyed" in result.output
+
+    # download must happen before destroy
+    mock_download.assert_called_once()
+    assert mock_download.call_args.kwargs["dest_path"] == backup.resolve()
+    mock_destroy.assert_called_once_with(42)
+
+
+@patch("openoutreach.cli.sidecar_download_db")
+@patch("openoutreach.cli.client.destroy_instance")
+@patch("openoutreach.cli.client.get_active_instance")
+def test_down_no_download_flag_skips_download(mock_active, mock_destroy, mock_download):
     from openoutreach.config import save
     save({"api_token": "tok_abc"})
 
     mock_active.return_value = INSTANCE_RESPONSE
 
-    result = runner.invoke(app, ["down"])
+    result = runner.invoke(app, ["down", "--no-download"])
     assert result.exit_code == 0
     assert "destroyed" in result.output
+    mock_download.assert_not_called()
     mock_destroy.assert_called_once_with(42)
+
+
+@patch("openoutreach.cli.sidecar_download_db")
+@patch("openoutreach.cli.client.destroy_instance")
+@patch("openoutreach.cli.client.get_active_instance")
+def test_down_prompts_and_aborts_if_user_declines_overwrite(
+    mock_active, mock_destroy, mock_download, tmp_path
+):
+    from openoutreach.config import save
+    save({"api_token": "tok_abc"})
+
+    mock_active.return_value = INSTANCE_RESPONSE
+    existing = tmp_path / "backup.sqlite3"
+    existing.write_bytes(b"preexisting")
+
+    # Answer "n" to the overwrite prompt.
+    result = runner.invoke(
+        app, ["down", "--backup-path", str(existing)], input="n\n"
+    )
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+    assert "Aborted" in result.output
+
+    mock_download.assert_not_called()
+    mock_destroy.assert_not_called()
+    # Original file is untouched.
+    assert existing.read_bytes() == b"preexisting"
+
+
+@patch("openoutreach.cli.sidecar_download_db", side_effect=RuntimeError("network down"))
+@patch("openoutreach.cli.client.destroy_instance")
+@patch("openoutreach.cli.client.get_active_instance")
+def test_down_aborts_if_download_fails(mock_active, mock_destroy, mock_download, tmp_path):
+    from openoutreach.config import save
+    save({"api_token": "tok_abc"})
+
+    mock_active.return_value = INSTANCE_RESPONSE
+
+    result = runner.invoke(
+        app, ["down", "--backup-path", str(tmp_path / "backup.sqlite3")]
+    )
+    assert result.exit_code == 1
+    assert "DB download failed" in result.output
+    mock_destroy.assert_not_called()
 
 
 @patch("openoutreach.cli.client.get_active_instance", return_value=None)
@@ -250,3 +317,41 @@ def test_down_no_instance(mock_active):
 
     result = runner.invoke(app, ["down"])
     assert result.exit_code == 1
+
+
+# ── client.destroy_instance idempotency ──────────────────────────
+
+
+@patch("openoutreach.client.httpx.request")
+def test_destroy_instance_treats_404_as_success(mock_request):
+    """A retried DELETE after the server already removed the row must not error."""
+    import httpx as _httpx
+
+    from openoutreach import client as client_mod
+    from openoutreach.config import save
+    save({"api_token": "tok_abc"})
+
+    response = _httpx.Response(
+        404, request=_httpx.Request("DELETE", "https://hub/api/instances/42/")
+    )
+    mock_request.return_value = response
+
+    # Should not raise.
+    client_mod.destroy_instance(42)
+
+
+@patch("openoutreach.client.httpx.request")
+def test_destroy_instance_propagates_other_errors(mock_request):
+    import httpx as _httpx
+
+    from openoutreach import client as client_mod
+    from openoutreach.config import save
+    save({"api_token": "tok_abc"})
+
+    response = _httpx.Response(
+        400, request=_httpx.Request("DELETE", "https://hub/api/instances/42/")
+    )
+    mock_request.return_value = response
+
+    with pytest.raises(_httpx.HTTPStatusError):
+        client_mod.destroy_instance(42)

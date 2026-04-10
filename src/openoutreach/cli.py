@@ -14,7 +14,11 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from openoutreach import __version__, client
 from openoutreach import config as config_mod
 from openoutreach.client import AuthExpiredError, Credentials
-from openoutreach.log_stream import stream_logs, upload_db as sidecar_upload_db
+from openoutreach.log_stream import (
+    download_db as sidecar_download_db,
+    stream_logs,
+    upload_db as sidecar_upload_db,
+)
 from openoutreach.prompts import PREMIUM_QUESTIONS
 from openoutreach.wizard import ask as ask_wizard
 
@@ -139,6 +143,25 @@ def _upload_to_sidecar(info: dict, db_path: Path) -> None:
         db_path=db_path,
     )
     console.print("[green]✓[/green] Database uploaded.")
+
+
+DEFAULT_DB_FILENAME = "db.sqlite3"
+
+
+def _default_backup_path() -> Path:
+    """Return ``./db.sqlite3`` in the current working directory."""
+    return Path.cwd() / DEFAULT_DB_FILENAME
+
+
+def _download_from_sidecar(info: dict, dest_path: Path) -> None:
+    """Stop the remote app and download its db.sqlite3 to *dest_path*."""
+    sidecar_download_db(
+        droplet_ip=info["droplet_ip"],
+        server_cert=info["server_cert"],
+        client_cert=info["client_cert"],
+        client_key=info["client_key"],
+        dest_path=dest_path,
+    )
 
 
 # ── Up ──────────────────────────────────────────────────────────
@@ -278,14 +301,57 @@ def logs() -> None:
     )
 
 
-@app.command()
-def down() -> None:
-    """Destroy your cloud instance."""
-    info = _require_active_instance()
-    try:
-        with console.status("Destroying instance…"):
-            client.destroy_instance(info["id"])
-    except AuthExpiredError:
-        err.print(_REAUTH_MSG)
-        raise SystemExit(1)
+def _resolve_backup_target(backup_path: Optional[Path]) -> Path:
+    """Resolve the user-supplied backup path, or the default, to an absolute path."""
+    return (backup_path or _default_backup_path()).expanduser().resolve()
+
+
+def _confirm_overwrite(path: Path) -> bool:
+    """Return True if *path* does not exist, or the user confirms overwrite."""
+    if not path.exists():
+        return True
+    return typer.confirm(f"{path} already exists. Overwrite?")
+
+
+def _run_download(info: dict, target: Path) -> None:
+    """Download the remote DB to *target* and announce success. Raises on failure."""
+    _download_from_sidecar(info, target)
+    console.print(f"[green]✓[/green] Database saved to {target}")
+
+
+def _run_destroy(instance_id: int) -> None:
+    """Destroy the instance via the hub and announce success. Raises on failure."""
+    with console.status("Destroying instance…"):
+        client.destroy_instance(instance_id)
     console.print("[green]✓[/green] Instance destroyed.")
+
+
+@app.command()
+def down(
+    no_download: bool = typer.Option(
+        False, "--no-download", help="Skip downloading the DB before destroying the instance."
+    ),
+    backup_path: Optional[Path] = typer.Option(
+        None,
+        "--backup-path",
+        help="Where to save the downloaded DB. Default: ./db.sqlite3 (prompts before overwrite).",
+    ),
+) -> None:
+    """Download the cloud DB, then destroy your cloud instance.
+
+    Save-first, destroy-second: the droplet is only destroyed after the DB
+    file is on local disk. If download fails, the droplet is left running
+    and the command can be retried safely. If the target backup path
+    already exists the user is prompted before anything is overwritten.
+    """
+    target = None if no_download else _resolve_backup_target(backup_path)
+    if target is not None and not _confirm_overwrite(target):
+        err.print("Aborted.")
+        raise SystemExit(1)
+
+    info = _require_active_instance()
+
+    if target is not None:
+        _run_download(info, target)
+
+    _run_destroy(info["id"])

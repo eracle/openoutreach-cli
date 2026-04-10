@@ -181,5 +181,14 @@ def poll_instance_running(
 
 @_retry_transient
 def destroy_instance(instance_id: int) -> None:
-    """DELETE /api/instances/{id}/"""
-    _authed_request("DELETE", f"/api/instances/{instance_id}/")
+    """DELETE /api/instances/{id}/
+
+    Idempotent: 404 is treated as success so a retried ``down`` after a
+    dropped response (when the first DELETE did reach the hub) does not
+    surface a spurious error.
+    """
+    try:
+        _authed_request("DELETE", f"/api/instances/{instance_id}/")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            raise

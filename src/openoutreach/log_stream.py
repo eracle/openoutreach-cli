@@ -152,3 +152,49 @@ def _progress_reader(path: Path, total: int, chunk_size: int = 65536):
             while chunk := f.read(chunk_size):
                 yield chunk
                 progress.update(task, advance=len(chunk))
+
+
+def download_db(
+    droplet_ip: str,
+    server_cert: str,
+    client_cert: str,
+    client_key: str,
+    dest_path: Path,
+    *,
+    max_wait: float = MAX_WAIT_S,
+) -> None:
+    """Stop the remote app container and download its ``db.sqlite3``.
+
+    Writes atomically: streams into ``<dest_path>.bak`` then renames onto
+    ``dest_path`` on success. Mirrors the sidecar's upload pattern.
+    """
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with _mtls_context(server_cert, client_cert, client_key) as ctx:
+
+        def _fetch():
+            with httpx.stream(
+                "POST",
+                _sidecar_url(droplet_ip, "/db-stop"),
+                verify=ctx,
+                timeout=httpx.Timeout(connect=10, read=120, write=10, pool=10),
+            ) as resp:
+                resp.raise_for_status()
+                total = int(resp.headers.get("Content-Length", 0)) or None
+                _stream_to_file(resp, dest_path, total)
+
+        _retry(_fetch, max_wait=max_wait)
+
+
+def _stream_to_file(resp: httpx.Response, dest_path: Path, total: int | None) -> None:
+    """Write an httpx streaming response to *dest_path* atomically via a ``.bak`` sibling."""
+    bak_path = dest_path.with_name(dest_path.name + ".bak")
+    with Progress(
+        BarColumn(), DownloadColumn(), TransferSpeedColumn(), TimeRemainingColumn(),
+    ) as progress:
+        task = progress.add_task("Downloading", total=total)
+        with bak_path.open("wb") as f:
+            for chunk in resp.iter_bytes():
+                f.write(chunk)
+                progress.update(task, advance=len(chunk))
+    bak_path.replace(dest_path)
