@@ -1,7 +1,7 @@
 """Shared onboarding prompt definitions for all OpenOutreach contexts.
 
 Two profiles:
-- PREMIUM_QUESTIONS  — full wizard including VPN location (cloud-hosted)
+- CLOUD_QUESTIONS  — full wizard including VPN location (cloud-hosted)
 - SELF_HOSTED_QUESTIONS — everything except VPN (local/Docker)
 """
 
@@ -17,7 +17,7 @@ from openoutreach.wizard import (
     Text,
 )
 
-# ── VPN (premium only) ───────────────────────────────────────────
+# ── VPN (cloud only) ─────────────────────────────────────────────
 
 VPN_COUNTRY = Autocomplete("vpn_country", "VPN country", resolver=lambda _: countries())
 VPN_CITY = Autocomplete("vpn_city", "VPN city", resolver=lambda a: cities(a.get("vpn_country", "")))
@@ -66,7 +66,7 @@ LEGAL = Confirm(
 
 # ── Profiles ─────────────────────────────────────────────────────
 
-PREMIUM_QUESTIONS = [
+CLOUD_QUESTIONS = [
     VPN_COUNTRY, VPN_CITY,
 ]
 

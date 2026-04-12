@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "openoutreach"
 version = "0.2.0"
-description = "CLI for OpenOutreach Premium — provision and manage your cloud LinkedIn automation instance."
+description = "CLI for OpenOutreach Cloud — provision and manage your cloud LinkedIn automation instance."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

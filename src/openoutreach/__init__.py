@@ -1,3 +1,3 @@
-"""OpenOutreach CLI — manage your Premium cloud instance."""
+"""OpenOutreach CLI — manage your Cloud instance."""
 
 __version__ = "0.2.1"

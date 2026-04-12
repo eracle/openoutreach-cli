@@ -19,7 +19,7 @@ from openoutreach.log_stream import (
     stream_logs,
     upload_db as sidecar_upload_db,
 )
-from openoutreach.prompts import PREMIUM_QUESTIONS
+from openoutreach.prompts import CLOUD_QUESTIONS
 from openoutreach.wizard import ask as ask_wizard
 
 _REAUTH_MSG = (
@@ -34,7 +34,7 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-app = typer.Typer(help="Manage your OpenOutreach Premium cloud instance.", invoke_without_command=True, add_completion=False)
+app = typer.Typer(help="Manage your OpenOutreach Cloud instance.", invoke_without_command=True, add_completion=False)
 
 
 @app.callback()
@@ -63,7 +63,7 @@ def _ensure_vpn_config() -> dict:
         return instance_config
 
     console.print("No VPN configuration found — starting wizard.\n")
-    answers = ask_wizard(PREMIUM_QUESTIONS)
+    answers = ask_wizard(CLOUD_QUESTIONS)
     if answers is None:
         err.print("Cancelled.")
         raise SystemExit(1)
@@ -112,7 +112,7 @@ def _run_signup() -> None:
 
 @app.command()
 def signup() -> None:
-    """Sign up for OpenOutreach Premium via Stripe checkout."""
+    """Sign up for OpenOutreach Cloud via Stripe checkout."""
     _run_signup()
     console.print("Run [bold]openoutreach up[/bold] to provision your cloud instance.")
 

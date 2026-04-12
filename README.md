@@ -1,6 +1,6 @@
 # openoutreach
 
-CLI for [OpenOutreach](https://openoutreach.app) Premium — provision and manage your cloud LinkedIn automation instance.
+CLI for [OpenOutreach](https://openoutreach.app) Cloud — provision and manage your cloud LinkedIn automation instance.
 
 ## Install
 
@@ -20,7 +20,7 @@ openoutreach down [--backup-path PATH]             # Download DB, then destroy t
 
 ## Data lifecycle
 
-OpenOutreach Premium runs a full **local → cloud → local** loop around your SQLite DB:
+OpenOutreach Cloud runs a full **local → cloud → local** loop around your SQLite DB:
 
 1. `openoutreach up ./data` provisions a droplet and uploads `./data/db.sqlite3` — the DB carries your LinkedIn session, campaigns, and accumulated leads.
 2. The cloud instance runs the daemon, enriching leads and updating campaign state. Everything is written back to the same SQLite file on the droplet.
