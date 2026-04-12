@@ -81,10 +81,6 @@ def _authenticate(email: str) -> Credentials:
     with console.status("Creating checkout session…"):
         result = client.create_checkout(email)
 
-    if result.is_active:
-        console.print("Subscription already active — reusing credentials.")
-        return result.credentials
-
     console.print(f"Opening checkout: [link={result.checkout_url}]{result.checkout_url}[/link]")
     webbrowser.open(result.checkout_url)
 

@@ -13,9 +13,9 @@ from openoutreach.config import hub_url, require_token
 
 
 class AuthExpiredError(Exception):
-    """Raised when the hub rejects our API token (HTTP 403).
+    """Raised when the hub rejects our API token (HTTP 401/403).
 
-    This typically means the token was regenerated on another device.
+    This typically means the token expired or was revoked.
     """
 
 
@@ -26,7 +26,7 @@ def _base_url() -> str:
 def _authed_request(method: str, path: str, **kwargs) -> httpx.Response:
     """Send an authenticated request to the hub API.
 
-    Injects the Bearer token and raises ``AuthExpiredError`` on 403.
+    Injects the Bearer token and raises ``AuthExpiredError`` on 401/403.
     All other HTTP errors propagate as ``httpx.HTTPStatusError``.
     """
     kwargs.setdefault("timeout", 30)
@@ -36,7 +36,7 @@ def _authed_request(method: str, path: str, **kwargs) -> httpx.Response:
         headers={"Authorization": f"Bearer {require_token()}"},
         **kwargs,
     )
-    if r.status_code == 403:
+    if r.status_code in (401, 403):
         raise AuthExpiredError(r.text)
     r.raise_for_status()
     return r
@@ -71,20 +71,10 @@ class Credentials:
 
 @dataclass(frozen=True)
 class CheckoutResult:
-    """Result of POST /api/checkout/.
+    """Result of POST /api/checkout/ — always a Stripe redirect."""
 
-    Exactly one of ``credentials`` or ``checkout`` is set:
-    - ``credentials``: user already active, token returned directly.
-    - ``checkout``: new user, redirect to Stripe then poll auth_status.
-    """
-
-    credentials: Credentials | None
-    checkout_url: str | None
-    session_id: str | None
-
-    @property
-    def is_active(self) -> bool:
-        return self.credentials is not None
+    checkout_url: str
+    session_id: str
 
 
 # ── Auth / Checkout ───────────────────────────────────────────────
@@ -96,19 +86,7 @@ def create_checkout(linkedin_email: str) -> CheckoutResult:
     r = httpx.post(f"{_base_url()}/api/checkout/", json={"linkedin_email": linkedin_email})
     r.raise_for_status()
     data = r.json()
-
-    if data["status"] == "active":
-        return CheckoutResult(
-            credentials=Credentials(api_token=data["api_token"], customer_id=data["customer_id"]),
-            checkout_url=None,
-            session_id=None,
-        )
-
-    return CheckoutResult(
-        credentials=None,
-        checkout_url=data["checkout_url"],
-        session_id=data["session_id"],
-    )
+    return CheckoutResult(checkout_url=data["checkout_url"], session_id=data["session_id"])
 
 
 def poll_auth_status(session_id: str, *, timeout: int = 300, interval: int = 3) -> Credentials:
@@ -121,9 +99,6 @@ def poll_auth_status(session_id: str, *, timeout: int = 300, interval: int = 3) 
 
         if data["status"] == "complete":
             return Credentials(api_token=data["api_token"], customer_id=data["customer_id"])
-
-        if data["status"] == "consumed":
-            raise RuntimeError("API token was already retrieved. Run 'openoutreach config' to re-authenticate.")
 
         time.sleep(interval)
 
