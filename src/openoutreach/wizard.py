@@ -1,9 +1,10 @@
 """Reusable step-by-step prompt wizard with Ctrl+B-to-go-back support.
 
-Navigation: Ctrl+B goes back one step, Ctrl+C cancels the wizard.
+Navigation: Ctrl+B goes back one step, Ctrl+C cancels the wizard,
+Ctrl+D skips optional fields (cancels on required ones).
 Each question type implements ``_prompt()`` which returns the raw user
 input, the sentinel ``_BACK``, or ``None`` (cancel).  The base class
-``ask()`` handles navigation and cleaning uniformly.
+``ask()`` handles navigation, EOF handling, and cleaning uniformly.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from prompt_toolkit.key_binding import KeyBindings
 # -- Sentinels & shared state ------------------------------------------------
 
 _BACK = "__BACK__"
-_CONTROLS = "Ctrl+B: back | Ctrl+C: cancel"
+_CONTROLS = "Ctrl+B: back | Ctrl+D: skip optional | Ctrl+C: cancel"
 
 # -- Key bindings (shared by all inline question types) -----------------------
 
@@ -66,8 +67,16 @@ class Question:
     required: bool = True
 
     def ask(self, default, *, answers: dict | None = None):
-        """Prompt the user.  Returns cleaned answer, ``_BACK``, or ``None``."""
-        raw = self._prompt(default, answers=answers)
+        """Prompt the user.  Returns cleaned answer, ``_BACK``, or ``None``.
+
+        Ctrl-D (EOF) skips optional fields and cancels required ones, so
+        every question type behaves the same whether the underlying
+        prompt is questionary or raw prompt_toolkit.
+        """
+        try:
+            raw = self._prompt(default, answers=answers)
+        except EOFError:
+            return None if self.required else self._empty_value(default)
         if raw is None or raw == _BACK:
             return raw
         return self._clean(raw)
@@ -77,6 +86,10 @@ class Question:
 
     def _clean(self, raw):
         return raw.strip() if isinstance(raw, str) else raw
+
+    def _empty_value(self, default):
+        """Value returned when Ctrl-D skips an optional question."""
+        return ""
 
     @property
     def _instruction(self) -> str | None:
@@ -122,6 +135,9 @@ class Confirm(Question):
                 return result
             questionary.print("  You must accept to continue.", style="fg:red")
 
+    def _empty_value(self, default):
+        return bool(default) if isinstance(default, bool) else self.default
+
 
 class IntText(Question):
     """Integer text input."""
@@ -137,6 +153,12 @@ class IntText(Question):
 
     def _clean(self, raw):
         return int(raw)
+
+    def _empty_value(self, default):
+        try:
+            return int(default)
+        except (TypeError, ValueError):
+            return self.default
 
 
 class Autocomplete(Question):
@@ -200,7 +222,7 @@ class MultilineText(Question):
                     default=default or "",
                     multiline=True,
                 )
-            except (EOFError, KeyboardInterrupt):
+            except KeyboardInterrupt:
                 return None
             if text == _BACK:
                 return _BACK
