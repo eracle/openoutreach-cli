@@ -240,7 +240,7 @@ def up(
         client_cert=info["client_cert"],
         client_key=info["client_key"],
         console=console,
-        max_wait=300,
+        connect_timeout_s=300,
     )
 
 

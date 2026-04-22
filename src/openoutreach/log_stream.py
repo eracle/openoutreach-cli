@@ -76,6 +76,32 @@ def _retry(fn, *, max_wait=MAX_WAIT_S, errors=(httpx.ConnectError, httpx.RemoteP
             delay = min(delay * 2, BACKOFF_CAP_S)
 
 
+_STREAM_RECONNECT_ERRORS = (
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+    httpx.HTTPStatusError,
+    httpx.TimeoutException,
+)
+
+
+def _stream_once(droplet_ip: str, ctx: ssl.SSLContext, console: Console,
+                 on_connected) -> None:
+    """One connection's worth of streaming. Raises on transport errors."""
+    with httpx.stream(
+        "GET",
+        _sidecar_url(droplet_ip, "/logs"),
+        verify=ctx,
+        timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
+    ) as resp:
+        resp.raise_for_status()
+        on_connected()
+        console.print("[green]Connected.[/green]")
+        for chunk in resp.iter_text():
+            console.print(chunk, end="", highlight=False)
+    console.print("\n[yellow]Log stream ended.[/yellow]")
+
+
 def stream_logs(
     droplet_ip: str,
     server_cert: str,
@@ -83,37 +109,46 @@ def stream_logs(
     client_key: str,
     *,
     console: Console | None = None,
-    max_wait: float = MAX_WAIT_S,
+    connect_timeout_s: float = MAX_WAIT_S,
 ) -> None:
-    """Stream logs from the droplet's mTLS sidecar until Ctrl-C."""
+    """Stream logs from the droplet's mTLS sidecar until Ctrl-C.
+
+    Initial connect retries for up to *connect_timeout_s* seconds. Once
+    connected, transient errors (read timeouts during long idle windows,
+    short network blips) trigger an immediate reconnect with exponential
+    backoff — the stream never dies silently; the user sees either logs or
+    a '[yellow]Reconnecting…[/yellow]' line and can Ctrl-C out at any time.
+    """
     if console is None:
         console = Console()
 
     with _mtls_context(server_cert, client_cert, client_key) as ctx:
+        connected = False
+        deadline = time.monotonic() + connect_timeout_s
+        delay = 1.0
 
-        def _connect():
-            with httpx.stream(
-                "GET",
-                _sidecar_url(droplet_ip, "/logs"),
-                verify=ctx,
-                timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
-            ) as resp:
-                resp.raise_for_status()
-                console.print("[green]Connected.[/green]")
-                try:
-                    for chunk in resp.iter_text():
-                        console.print(chunk, end="", highlight=False)
-                except KeyboardInterrupt:
-                    console.print("\n[dim]Log stream detached (instance still running).[/dim]")
-                    return
+        def _mark_connected():
+            nonlocal connected, delay
+            connected = True
+            delay = 1.0  # reset backoff after a successful connect
 
-            console.print("\n[yellow]Log stream ended.[/yellow]")
-
-        _retry(
-            _connect,
-            max_wait=max_wait,
-            errors=(httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, httpx.HTTPStatusError),
-        )
+        while True:
+            try:
+                _stream_once(droplet_ip, ctx, console, _mark_connected)
+                return
+            except KeyboardInterrupt:
+                console.print(
+                    "\n[dim]Log stream detached (instance still running).[/dim]",
+                )
+                return
+            except _STREAM_RECONNECT_ERRORS as exc:
+                if not connected and time.monotonic() + delay > deadline:
+                    raise
+                console.print(
+                    f"[yellow]Reconnecting…[/yellow] ({type(exc).__name__})",
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, BACKOFF_CAP_S)
 
 
 def upload_db(
